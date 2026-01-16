@@ -686,9 +686,7 @@ export default function App() {
             <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
               {loginLabel}
             </button>
-            <button className="secondary" onClick={handleAuthorizeWrite}>
-              Enable write
-            </button>
+
           </div>
         </header>
 
@@ -726,9 +724,7 @@ export default function App() {
           <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
             {loginLabel}
           </button>
-          <button className="secondary" onClick={handleAuthorizeWrite}>
-            Enable write
-          </button>
+
         </div>
       </header>
 
