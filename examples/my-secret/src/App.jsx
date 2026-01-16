@@ -187,7 +187,7 @@ export default function App() {
       await prividium.authorize({
         scopes: ['wallet:required', 'network:required']
       });
-      await prividium.addNetworkToWallet();
+      //await prividium.addNetworkToWallet();
       setIsAuthorized(true);
     } catch (err) {
       console.error(err);
@@ -234,6 +234,7 @@ export default function App() {
         chain: prividium.chain,
         transport: custom(window.ethereum)
       });
+      console.log("Prividium chain is ", prividium.chain);
 
       const data = encodeFunctionData({
         abi: NOTES_ABI,
@@ -241,20 +242,33 @@ export default function App() {
         args: [note, visibility === 'public']
       });
 
+      console.log("Before request prep");
+      const nonce = await rpcClient.getTransactionCount({ address });
+      const gasPrice = await rpcClient.getGasPrice();
+
+
       const request = await walletClient.prepareTransactionRequest({
         account: address,
         to: CONTRACT_ADDRESS,
         data,
-        value: 0n
+        value: 0n,
+        gas: 1000000n,
+        gasPrice: gasPrice,
+        nonce: nonce
       });
+
+      console.log("Request is ready");
+
 
       await prividium.authorizeTransaction({
         walletAddress: address,
-        contractAddress: CONTRACT_ADDRESS,
+        toAddress: CONTRACT_ADDRESS,
         nonce: Number(request.nonce),
         calldata: request.data,
         value: request.value
       });
+      await walletClient.switchChain({ id: prividium.chain.id })
+
 
       const hash = await walletClient.sendTransaction(request);
 
@@ -292,16 +306,23 @@ export default function App() {
         args: [BigInt(item.noteId)]
       });
 
+      const nonce = await rpcClient.getTransactionCount({ address });
+      const gasPrice = await rpcClient.getGasPrice();
+
+
       const request = await walletClient.prepareTransactionRequest({
         account: address,
         to: CONTRACT_ADDRESS,
         data,
-        value: 0n
+        value: 0n,
+        gas: 500000n,
+        gasPrice: gasPrice,
+        nonce: nonce
       });
 
       await prividium.authorizeTransaction({
         walletAddress: address,
-        contractAddress: CONTRACT_ADDRESS,
+        toAddress: CONTRACT_ADDRESS,
         nonce: Number(request.nonce),
         calldata: request.data,
         value: request.value
