@@ -93,7 +93,7 @@ export default function App() {
   const [address, setAddress] = useState('');
   const [payload, setPayload] = useState('');
   const [delaySeconds, setDelaySeconds] = useState(DELAY_OPTIONS[0].seconds);
-  const [activeTab, setActiveTab] = useState('create');
+  const [activeTab, setActiveTab] = useState('recent');
   const [feed, setFeed] = useState([]);
   const [loadingFeed, setLoadingFeed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -317,9 +317,7 @@ export default function App() {
           <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
             {loginLabel}
           </button>
-          <button className="secondary" onClick={handleAuthorizeWrite}>
-            Enable write access
-          </button>
+
         </div>
       </header>
 
