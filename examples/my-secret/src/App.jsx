@@ -1,27 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  createWalletClient,
-  custom,
-  encodeFunctionData,
-  encodePacked,
-  keccak256,
-  parseAbiItem,
-  toHex
-} from 'viem';
+import { getContract, createWalletClient, custom, encodeFunctionData } from 'viem';
 import { createPrividiumClient } from 'prividium';
 import { prividium } from './prividium';
-import { NOTES_ABI, NOTE_EVENTS } from './notesAbi';
-import {
-  explorerTxUrl,
-  formatAddress,
-  formatTimestamp,
-  randomSalt,
-  timeAgo,
-  ZERO_ADDRESS
-} from './utils';
+import { NOTES_ABI } from './notesAbi';
+import { explorerTxUrl, formatAddress, formatTimestamp, timeAgo, ZERO_ADDRESS } from './utils';
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_NOTES_CONTRACT_ADDRESS;
-const FEED_BLOCK_RANGE = Number(import.meta.env.VITE_FEED_BLOCK_RANGE || 5000);
+const FEED_PAGE_SIZE = 20n;
 
 function TeachingPanel() {
   return (
@@ -31,88 +16,64 @@ function TeachingPanel() {
         <div>
           <h3>Always Public</h3>
           <ul>
-            <li>An action happened</li>
-            <li>Who submitted it (address)</li>
-            <li>When it happened (timestamp)</li>
-            <li>Transaction hash / explorer link</li>
+            <li>This note is stored in contract storage on Prividium.</li>
+            <li>Public metadata includes author + timestamp + visibility.</li>
           </ul>
         </div>
         <div>
           <h3>Private with Prividium (when Secret selected)</h3>
           <ul>
-            <li>The note text</li>
-            <li>Only becomes visible if later revealed / made public</li>
+            <li>The note text (stored on-chain, but not publicly readable)</li>
+            <li>Becomes readable only after you reveal it</li>
           </ul>
         </div>
       </div>
       <p className="teaching-copy">
-        On a normal public chain, the note text would be visible immediately. Prividium lets you keep the payload
-        private while keeping a public, timestamped footprint that can be verified later.
+        When you reveal, anyone can read it and verify it was originally written on the recorded timestamp.
       </p>
     </section>
   );
 }
 
 function ActivityItem({ item, onReveal }) {
-  const badge = item.type === 'public' ? 'PUBLIC' : item.type === 'secret' ? 'SECRET' : 'REVEAL';
-  const actionLabel =
-    item.type === 'public' ? 'set a public note' : item.type === 'secret' ? 'set a secret' : 'revealed a note';
+  const badge = item.isPublic ? 'PUBLIC' : 'SECRET';
+  const actionLabel = item.isPublic ? 'wrote a public note' : 'stored a secret note';
 
   return (
     <li className="activity-item">
       <header>
         <span className={`badge ${badge.toLowerCase()}`}>{badge}</span>
         <div className="activity-meta">
-          <strong title={item.actor}>{formatAddress(item.actor)}</strong> {actionLabel}
+          <strong title={item.author}>{formatAddress(item.author)}</strong> {actionLabel}
           <div className="time">
-            {formatTimestamp(item.timestamp)} · <span>{timeAgo(item.timestamp)}</span>
+            {formatTimestamp(item.createdAt)} · <span>{timeAgo(item.createdAt)}</span>
           </div>
         </div>
       </header>
 
       <div className="activity-body">
-        <div className="tx-row">
-          <span className="label">Tx</span>
-          {item.explorerUrl ? (
-            <a href={item.explorerUrl} target="_blank" rel="noreferrer">
-              {item.txHash.slice(0, 10)}…
-            </a>
-          ) : (
-            <span>{item.txHash.slice(0, 10)}…</span>
-          )}
-        </div>
-
-        {item.type === 'public' && (
+        {item.isPublic && (
           <div className="note">
             <p className="note-text">“{item.note}”</p>
-            <p className="note-meta">Originally set at {formatTimestamp(item.timestamp)}.</p>
+            <p className="note-meta">Originally stored at {formatTimestamp(item.createdAt)}.</p>
           </div>
         )}
 
-        {item.type === 'secret' && (
+        {!item.isPublic && (
           <div className="note">
-            <p className="note-text placeholder">(Secret note text hidden)</p>
+            <p className="note-text placeholder">🔒 Private note stored on Prividium — content not publicly readable.</p>
             <details>
               <summary>Why can’t I see this?</summary>
               <ul>
-                <li>The payload is stored privately via Prividium.</li>
-                <li>Explorers show metadata, not secret content.</li>
-                <li>The author can later reveal using the commitment hash.</li>
+                <li>This note is in contract storage on Prividium.</li>
+                <li>Public metadata includes author + timestamp + visibility.</li>
+                <li>The author can later reveal it to make the content public.</li>
               </ul>
             </details>
             {item.canReveal && (
               <button className="secondary" onClick={() => onReveal(item)}>
                 Reveal my note
               </button>
-            )}
-          </div>
-        )}
-
-        {item.type === 'reveal' && (
-          <div className="note">
-            <p className="note-text">“{item.note}”</p>
-            {item.originalTimestamp && (
-              <p className="note-meta">Originally set at {formatTimestamp(item.originalTimestamp)}.</p>
             )}
           </div>
         )}
@@ -147,9 +108,22 @@ export default function App() {
     });
   }, [address]);
 
+  const notesContract = useMemo(() => {
+    if (!CONTRACT_ADDRESS) return null;
+    return getContract({
+      address: CONTRACT_ADDRESS,
+      abi: NOTES_ABI,
+      client: rpcClient
+    });
+  }, [rpcClient]);
+
   const loadFeed = useCallback(async () => {
     if (!CONTRACT_ADDRESS) {
       setError('Missing VITE_NOTES_CONTRACT_ADDRESS env var.');
+      return;
+    }
+    if (!notesContract) {
+      setError('Contract client not ready.');
       return;
     }
 
@@ -157,95 +131,38 @@ export default function App() {
     setError('');
 
     try {
-      const latestBlock = await rpcClient.getBlockNumber();
-      const range = BigInt(Math.max(1, FEED_BLOCK_RANGE));
-      const fromBlock = latestBlock > range ? latestBlock - range : 0n;
+      const total = await notesContract.read.getNotesCount();
+      if (total === 0n) {
+        setFeed([]);
+        return;
+      }
 
-      const [publicLogs, secretLogs, revealLogs] = await Promise.all([
-        rpcClient.getLogs({
-          address: CONTRACT_ADDRESS,
-          event: parseAbiItem(NOTE_EVENTS.public),
-          fromBlock,
-          toBlock: 'latest'
-        }),
-        rpcClient.getLogs({
-          address: CONTRACT_ADDRESS,
-          event: parseAbiItem(NOTE_EVENTS.secret),
-          fromBlock,
-          toBlock: 'latest'
-        }),
-        rpcClient.getLogs({
-          address: CONTRACT_ADDRESS,
-          event: parseAbiItem(NOTE_EVENTS.reveal),
-          fromBlock,
-          toBlock: 'latest'
+      const headers = await notesContract.read.getRecentNotes([FEED_PAGE_SIZE, 0n]);
+      const items = await Promise.all(
+        headers.map(async (header) => {
+          const isPublic = header.isPublic;
+          const noteId = Number(header.noteId);
+          const note = isPublic ? await notesContract.read.getPublicNoteContent([header.noteId]) : '';
+          return {
+            id: `note-${noteId}`,
+            noteId,
+            author: header.author,
+            createdAt: Number(header.createdAt),
+            isPublic,
+            note,
+            canReveal: !isPublic && address && header.author?.toLowerCase() === address.toLowerCase()
+          };
         })
-      ]);
+      );
 
-      const secretsByCommitment = new Map();
-      const secretItems = secretLogs.map((log) => {
-        const commitment = log.args.commitment;
-        secretsByCommitment.set(commitment, log.args.timestamp);
-        return {
-          id: `secret-${log.transactionHash}-${log.logIndex}`,
-          type: 'secret',
-          actor: log.args.author,
-          timestamp: Number(log.args.timestamp),
-          commitment,
-          txHash: log.transactionHash,
-          explorerUrl: explorerTxUrl(prividium.chain, log.transactionHash),
-          logIndex: Number(log.logIndex)
-        };
-      });
-
-      const publicItems = publicLogs.map((log) => ({
-        id: `public-${log.transactionHash}-${log.logIndex}`,
-        type: 'public',
-        actor: log.args.author,
-        timestamp: Number(log.args.timestamp),
-        note: log.args.note,
-        txHash: log.transactionHash,
-        explorerUrl: explorerTxUrl(prividium.chain, log.transactionHash),
-        logIndex: Number(log.logIndex)
-      }));
-
-      const revealItems = revealLogs.map((log) => ({
-        id: `reveal-${log.transactionHash}-${log.logIndex}`,
-        type: 'reveal',
-        actor: log.args.author,
-        timestamp: Number(log.args.timestamp),
-        note: log.args.note,
-        commitment: log.args.commitment,
-        originalTimestamp: secretsByCommitment.get(log.args.commitment),
-        txHash: log.transactionHash,
-        explorerUrl: explorerTxUrl(prividium.chain, log.transactionHash),
-        logIndex: Number(log.logIndex)
-      }));
-
-      const allItems = [...secretItems, ...publicItems, ...revealItems]
-        .sort((a, b) => {
-          if (b.timestamp !== a.timestamp) {
-            return b.timestamp - a.timestamp;
-          }
-          return b.logIndex - a.logIndex;
-        })
-        .map((item) => ({
-          ...item,
-          canReveal:
-            item.type === 'secret' &&
-            address &&
-            item.actor?.toLowerCase() === address.toLowerCase() &&
-            !!localStorage.getItem(`my-secret:${item.commitment}`)
-        }));
-
-      setFeed(allItems);
+      setFeed(items);
     } catch (err) {
       console.error(err);
       setError('Failed to load activity feed. Check your Prividium auth and contract permissions.');
     } finally {
       setLoadingFeed(false);
     }
-  }, [address, rpcClient]);
+  }, [address, notesContract]);
 
   useEffect(() => {
     if (isAuthorized) {
@@ -270,7 +187,7 @@ export default function App() {
       await prividium.authorize({
         scopes: ['wallet:required', 'network:required']
       });
-      await prividium.addNetworkToWallet();
+      //await prividium.addNetworkToWallet();
       setIsAuthorized(true);
     } catch (err) {
       console.error(err);
@@ -317,61 +234,52 @@ export default function App() {
         chain: prividium.chain,
         transport: custom(window.ethereum)
       });
-
-      const args = visibility === 'public'
-        ? [note]
-        : (() => {
-            const salt = randomSalt();
-            const commitment = keccak256(encodePacked(['string', 'bytes32', 'address'], [note, toHex(salt), address]));
-            localStorage.setItem(
-              `my-secret:${commitment}`,
-              JSON.stringify({ note, salt: toHex(salt), address })
-            );
-            return [commitment];
-          })();
+      console.log("Prividium chain is ", prividium.chain);
 
       const data = encodeFunctionData({
         abi: NOTES_ABI,
-        functionName: visibility === 'public' ? 'setPublic' : 'setSecret',
-        args
+        functionName: 'createNote',
+        args: [note, visibility === 'public']
       });
 
+      console.log("Before request prep");
       const nonce = await rpcClient.getTransactionCount({ address });
-      const gas = await rpcClient.estimateGas({
-        account: address,
-        to: CONTRACT_ADDRESS,
-        data
-      });
       const gasPrice = await rpcClient.getGasPrice();
 
-      await prividium.authorizeTransaction({
-        walletAddress: address,
-        contractAddress: CONTRACT_ADDRESS,
-        nonce: Number(nonce),
-        calldata: data,
-        value: 0n
-      });
 
-      const hash = await walletClient.sendTransaction({
+      const request = await walletClient.prepareTransactionRequest({
         account: address,
         to: CONTRACT_ADDRESS,
         data,
-        nonce,
-        gas,
-        gasPrice,
-        value: 0n
+        value: 0n,
+        gas: 1000000n,
+        gasPrice: gasPrice,
+        nonce: nonce
       });
 
+      console.log("Request is ready");
+
+
+      await prividium.authorizeTransaction({
+        walletAddress: address,
+        toAddress: CONTRACT_ADDRESS,
+        nonce: Number(request.nonce),
+        calldata: request.data,
+        value: request.value
+      });
+      await walletClient.switchChain({ id: prividium.chain.id })
+
+
+      const hash = await walletClient.sendTransaction(request);
+
       const now = Math.floor(Date.now() / 1000);
-      const commitment = visibility === 'secret' ? args[0] : null;
 
       setReceipt({
         status: 'Submitted',
         txHash: hash,
         explorerUrl: explorerTxUrl(prividium.chain, hash),
         timestamp: now,
-        visibility,
-        commitment
+        visibility
       });
       setNote('');
       await loadFeed();
@@ -385,14 +293,8 @@ export default function App() {
 
   const handleReveal = async (item) => {
     if (!address) return;
-    const stored = localStorage.getItem(`my-secret:${item.commitment}`);
-    if (!stored) {
-      setError('No local secret payload found to reveal.');
-      return;
-    }
 
     try {
-      const { note: storedNote, salt } = JSON.parse(stored);
       const walletClient = createWalletClient({
         chain: prividium.chain,
         transport: custom(window.ethereum)
@@ -400,40 +302,46 @@ export default function App() {
 
       const data = encodeFunctionData({
         abi: NOTES_ABI,
-        functionName: 'reveal',
-        args: [item.commitment, storedNote, salt]
+        functionName: 'makeNotePublic',
+        args: [BigInt(item.noteId)]
       });
 
       const nonce = await rpcClient.getTransactionCount({ address });
-      const gas = await rpcClient.estimateGas({
-        account: address,
-        to: CONTRACT_ADDRESS,
-        data
-      });
       const gasPrice = await rpcClient.getGasPrice();
 
-      await prividium.authorizeTransaction({
-        walletAddress: address,
-        contractAddress: CONTRACT_ADDRESS,
-        nonce: Number(nonce),
-        calldata: data,
-        value: 0n
-      });
 
-      await walletClient.sendTransaction({
+      const request = await walletClient.prepareTransactionRequest({
         account: address,
         to: CONTRACT_ADDRESS,
         data,
-        nonce,
-        gas,
-        gasPrice,
-        value: 0n
+        value: 0n,
+        gas: 500000n,
+        gasPrice: gasPrice,
+        nonce: nonce
+      });
+
+      await prividium.authorizeTransaction({
+        walletAddress: address,
+        toAddress: CONTRACT_ADDRESS,
+        nonce: Number(request.nonce),
+        calldata: request.data,
+        value: request.value
+      });
+
+      const hash = await walletClient.sendTransaction(request);
+
+      setReceipt({
+        status: 'Submitted',
+        txHash: hash,
+        explorerUrl: explorerTxUrl(prividium.chain, hash),
+        timestamp: Math.floor(Date.now() / 1000),
+        visibility: 'public'
       });
 
       await loadFeed();
     } catch (err) {
       console.error(err);
-      setError('Reveal failed. Make sure the commitment matches your secret.');
+      setError('Reveal failed. Make sure you are the author of the note.');
     }
   };
 
@@ -444,7 +352,7 @@ export default function App() {
       <header className="app-header">
         <div>
           <h1>My Secret</h1>
-          <p className="subtitle">A tiny Prividium demo: secret vs public notes with timestamped commitments.</p>
+          <p className="subtitle">A tiny Prividium demo: secret vs public notes stored directly on-chain.</p>
         </div>
         <div className="header-actions">
           <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
@@ -534,12 +442,6 @@ export default function App() {
                 <li>
                   <strong>Visibility:</strong> {receipt.visibility}
                 </li>
-                {receipt.visibility === 'secret' && (
-                  <li>
-                    <strong>Hidden payload:</strong> stored privately
-                    <div className="hash">Commitment: {receipt.commitment}</div>
-                  </li>
-                )}
               </ul>
             </div>
           )}

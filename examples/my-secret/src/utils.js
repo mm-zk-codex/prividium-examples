@@ -27,9 +27,3 @@ export function explorerTxUrl(chain, hash) {
   if (!baseUrl) return '';
   return `${baseUrl.replace(/\/$/, '')}/tx/${hash}`;
 }
-
-export function randomSalt() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return bytes;
-}

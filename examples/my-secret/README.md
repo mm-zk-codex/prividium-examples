@@ -5,9 +5,10 @@ verifiable metadata on-chain.
 
 ## What this demo teaches
 
-- **Public metadata vs private payload**: the chain always exposes who/when/tx hash, but secret note text stays hidden.
-- **Explorers see metadata, not secrets**: the activity feed links to the explorer, which only shows the public footprint.
-- **Timestamped commitments**: a secret note is a hash commitment; revealing later proves you knew it earlier.
+- **Public metadata vs private payload**: the chain exposes author + timestamp + visibility, but secret note text stays
+  private.
+- **No events needed**: the feed is built from contract storage using view methods.
+- **Reveal on demand**: revealing flips the note to public so anyone can read the original content later.
 
 ## Setup
 
@@ -52,7 +53,6 @@ VITE_PRIVIDIUM_CHAIN_ID=8022834
 VITE_PRIVIDIUM_CHAIN_NAME=Prividium
 VITE_PRIVIDIUM_EXPLORER_URL=https://explorer.prividium.dev
 VITE_NOTES_CONTRACT_ADDRESS=0xYourDeployedContract
-VITE_FEED_BLOCK_RANGE=5000
 ```
 
 > Note: `VITE_PRIVIDIUM_EXPLORER_URL` should be the base explorer URL; the app appends `/tx/<hash>`.
@@ -65,16 +65,41 @@ npm run dev
 
 Open the URL printed by Vite.
 
+## Why no events
+
+Prividium chains restrict event visibility for privacy. This demo never queries events or past logs; the feed is built
+entirely from contract storage view methods so it works in Prividium’s privacy model.
+
+## Why no localStorage
+
+Secret note content is stored in contract storage on Prividium (with privacy protection). Storing plaintext in
+`localStorage` would defeat the privacy model, so this demo never saves secret content in the browser.
+
+## How storage-based feed works
+
+1. The UI calls `getNotesCount()` to learn how many notes exist.
+2. It then calls `getRecentNotes(limit, offset)` to fetch recent note headers (noteId, author, createdAt, isPublic).
+3. For any header with `isPublic == true`, the UI calls `getPublicNoteContent(noteId)` to display the note text.
+4. Secret notes show a placeholder because the content is still private on-chain.
+
+## How reveal works
+
+When the author calls `makeNotePublic(noteId)`, the contract flips the note’s visibility to public without changing the
+original `createdAt` timestamp. The next feed refresh shows the plaintext, and anyone can verify it was written at the
+original timestamp.
+
 ## How to test the “secret then reveal” story
 
 1. Click **Enable write access** to authenticate with Prividium (wallet + network scopes).
 2. **Connect wallet** in the Write panel.
 3. Type a note, keep **Secret** selected, and press **Save**.
 4. In **Recent activity**, your new entry will show as SECRET with a hidden payload placeholder.
-5. Click **Reveal my note** to publish the plaintext. The feed will show a REVEAL item and the original timestamp.
+5. Click **Reveal my note** to make it public. The feed will show the plaintext with its original timestamp.
 
 ## Notes for operators
 
-- The feed is built by reading contract events via the authenticated Prividium transport.
-- Method permissions must allow `setPublic`, `setSecret`, and `reveal` for your demo users.
-- For demo purposes, the commitment preimage (note + salt) is stored in browser localStorage under `my-secret:*`.
+- The feed is built from contract storage via `getNotesCount()` + `getRecentNotes(limit, offset)` view calls.
+- Method permissions must allow `createNote`, `makeNotePublic`, `getNotesCount`, `getRecentNotes`,
+  `getPublicNoteContent`, and (optionally) `getMyNoteContent`.
+- Secrets are **not** stored in localStorage. The content lives in contract storage and is made public only when
+  `makeNotePublic` is called.

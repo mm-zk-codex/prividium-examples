@@ -1,33 +1,61 @@
 export const NOTES_ABI = [
   {
     type: 'function',
-    name: 'setPublic',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'note', type: 'string' }],
-    outputs: []
-  },
-  {
-    type: 'function',
-    name: 'setSecret',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'commitment', type: 'bytes32' }],
-    outputs: []
-  },
-  {
-    type: 'function',
-    name: 'reveal',
+    name: 'createNote',
     stateMutability: 'nonpayable',
     inputs: [
-      { name: 'commitment', type: 'bytes32' },
-      { name: 'note', type: 'string' },
-      { name: 'salt', type: 'bytes32' }
+      { name: 'content', type: 'string' },
+      { name: 'makePublicInitially', type: 'bool' }
     ],
+    outputs: [{ name: 'noteId', type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'makeNotePublic',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'noteId', type: 'uint256' }],
     outputs: []
+  },
+  {
+    type: 'function',
+    name: 'getNotesCount',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'getRecentNotes',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'limit', type: 'uint256' },
+      { name: 'offset', type: 'uint256' }
+    ],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple[]',
+        components: [
+          { name: 'noteId', type: 'uint256' },
+          { name: 'author', type: 'address' },
+          { name: 'createdAt', type: 'uint256' },
+          { name: 'isPublic', type: 'bool' }
+        ]
+      }
+    ]
+  },
+  {
+    type: 'function',
+    name: 'getPublicNoteContent',
+    stateMutability: 'view',
+    inputs: [{ name: 'noteId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'string' }]
+  },
+  {
+    type: 'function',
+    name: 'getMyNoteContent',
+    stateMutability: 'view',
+    inputs: [{ name: 'noteId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'string' }]
   }
 ];
-
-export const NOTE_EVENTS = {
-  public: 'event NotePublic(address indexed author, string note, uint256 timestamp)',
-  secret: 'event NoteSecret(address indexed author, bytes32 commitment, uint256 timestamp)',
-  reveal: 'event NoteReveal(address indexed author, bytes32 commitment, string note, uint256 timestamp)'
-};
