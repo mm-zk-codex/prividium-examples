@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "prividium": "0.1.7",
+    "prividium": "0.1.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "viem": "^2.21.0"

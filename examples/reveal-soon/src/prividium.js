@@ -6,7 +6,7 @@ const chainName = import.meta.env.VITE_PRIVIDIUM_CHAIN_NAME || 'Prividium';
 const rpcUrl = import.meta.env.VITE_PRIVIDIUM_RPC_URL || 'https://proxy.prividium.dev/rpc';
 const authBaseUrl =
   import.meta.env.VITE_PRIVIDIUM_AUTH_BASE_URL || 'https://user-panel.prividium.dev';
-const permissionsApiBaseUrl =
+const prividiumApiBaseUrl =
   import.meta.env.VITE_PRIVIDIUM_PERMISSIONS_API_URL || 'https://permissions-api.prividium.dev';
 const explorerUrl = import.meta.env.VITE_PRIVIDIUM_EXPLORER_URL;
 
@@ -25,11 +25,11 @@ const chain = defineChain({
   },
   blockExplorers: explorerUrl
     ? {
-        default: {
-          name: 'Explorer',
-          url: explorerUrl
-        }
+      default: {
+        name: 'Explorer',
+        url: explorerUrl
       }
+    }
     : undefined
 });
 
@@ -41,7 +41,7 @@ export const prividium = createPrividiumChain({
   chain,
   rpcUrl,
   authBaseUrl,
-  permissionsApiBaseUrl,
+  prividiumApiBaseUrl,
   redirectUrl,
   onAuthExpiry: () => {
     window.alert('Your Prividium session expired. Please reconnect.');
