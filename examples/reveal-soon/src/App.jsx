@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createWalletClient, custom, encodeFunctionData, getContract } from 'viem';
 import { createPrividiumClient } from 'prividium';
 import { prividium } from './prividium';
 import { REVEAL_SOON_ABI } from './messageAbi';
+import logo from './assets/logo.svg';
 import {
+  copyToClipboard,
   explorerTxUrl,
   formatAddress,
   formatCountdown,
   formatRelative,
   formatTimestamp,
   timeAgo,
+  truncateMiddle,
   ZERO_ADDRESS
 } from './utils';
 
@@ -104,40 +107,81 @@ function TeachingPanel({ compact }) {
   );
 }
 
-function MessageRow({ item, nowSeconds, onOpen }) {
+function MessageRow({ item, nowSeconds, onOpen, txHash, explorerUrl }) {
   const isRevealed = nowSeconds >= item.revealAt;
   const revealLabel = isRevealed ? 'Revealed' : 'Hidden';
   const countdown = formatCountdown(item.revealAt, nowSeconds);
-  const href = `/message/${item.messageId}`;
+  const isFreshReveal = isRevealed && nowSeconds - item.revealAt < 120;
 
   return (
     <li className="activity-item">
-      <header>
-        <span className={`badge ${isRevealed ? 'reveal' : 'secret'}`}>{revealLabel}</span>
-        <div className="activity-meta">
-          <strong>{item.publicText}</strong>
-          <span className="subtle">by {formatAddress(item.author)}</span>
+      <div className="activity-grid">
+        <div className="status-col">
+          <div className="status-badges">
+            <span className={`badge ${isRevealed ? 'reveal' : 'secret'}`}>{revealLabel}</span>
+            {isFreshReveal && <span className="badge unlocked pulse">Unlocked!</span>}
+          </div>
+          <strong className="truncate" title={item.publicText}>
+            {item.publicText}
+          </strong>
           <div className="time">
             Created {formatTimestamp(item.createdAt)} · {timeAgo(item.createdAt, nowSeconds)}
           </div>
-          <div className="time">
-            Reveals {formatTimestamp(item.revealAt)} · {formatRelative(item.revealAt, nowSeconds)}
+        </div>
+        <div className="author-col">
+          <span className="label">Author</span>
+          <div className="inline-meta">
+            <span className="truncate" title={item.author}>
+              {truncateMiddle(item.author)}
+            </span>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Copy author"
+              onClick={() => copyToClipboard(item.author)}
+            >
+              ⧉
+            </button>
           </div>
         </div>
-        <div className="countdown">
-          {isRevealed ? 'Now public' : `Unlocks in ${countdown}`}
-          <a
-            className="secondary link-button"
-            href={href}
-            onClick={(event) => {
-              event.preventDefault();
+        <div className="reveal-col">
+          <span className="label">Reveal</span>
+          <span>{formatTimestamp(item.revealAt)}</span>
+          <span className="subtle">{isRevealed ? 'Now public' : `Unlocks in ${countdown}`}</span>
+        </div>
+        <div className="tx-col">
+          <span className="label">Tx / link</span>
+          <div className="inline-meta">
+            <span className="truncate" title={txHash || 'Not available'}>
+              {txHash ? truncateMiddle(txHash) : '—'}
+            </span>
+            {txHash && (
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Copy transaction hash"
+                onClick={() => copyToClipboard(txHash)}
+              >
+                ⧉
+              </button>
+            )}
+            {explorerUrl && (
+              <a className="icon-button" href={explorerUrl} target="_blank" rel="noreferrer" aria-label="View on explorer">
+                ↗
+              </a>
+            )}
+          </div>
+          <button
+            className="secondary small"
+            type="button"
+            onClick={() => {
               onOpen(item.messageId);
             }}
           >
             Open
-          </a>
+          </button>
         </div>
-      </header>
+      </div>
     </li>
   );
 }
@@ -150,12 +194,16 @@ function MessagePage({
   txHash,
   txLink,
   onBack,
-  onShare
+  onShare,
+  onCelebrate,
+  hasCelebrated,
+  markCelebrated
 }) {
   const [message, setMessage] = useState(null);
   const [privateText, setPrivateText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showUnlocked, setShowUnlocked] = useState(false);
 
   useEffect(() => {
     if (!revealContract) return;
@@ -206,6 +254,18 @@ function MessagePage({
     };
   }, [messageId, message, nowSeconds, privateText, revealContract]);
 
+  useEffect(() => {
+    if (!message) return;
+    if (nowSeconds < message.revealAt) return;
+    if (!privateText) return;
+    if (hasCelebrated(message.id)) return;
+    markCelebrated(message.id);
+    onCelebrate();
+    setShowUnlocked(true);
+    const timeout = window.setTimeout(() => setShowUnlocked(false), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [hasCelebrated, markCelebrated, message, nowSeconds, onCelebrate, privateText]);
+
   if (loading) {
     return (
       <section className="panel">
@@ -253,7 +313,19 @@ function MessagePage({
       <div className="metadata">
         <div>
           <span className="label">Author</span>
-          <span>{message.author}</span>
+          <div className="inline-meta">
+            <span className="truncate" title={message.author}>
+              {truncateMiddle(message.author)}
+            </span>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Copy author"
+              onClick={() => copyToClipboard(message.author)}
+            >
+              ⧉
+            </button>
+          </div>
         </div>
         <div>
           <span className="label">Created</span>
@@ -269,26 +341,39 @@ function MessagePage({
         </div>
         <div>
           <span className="label">Tx hash</span>
-          <span>
-            {txHash ? (
-              txLink ? (
-                <a href={txLink} target="_blank" rel="noreferrer">
-                  {txHash}
-                </a>
-              ) : (
-                txHash
-              )
-            ) : (
-              'Not available'
+          <div className="inline-meta">
+            <span className="truncate" title={txHash || 'Not available'}>
+              {txHash ? truncateMiddle(txHash) : 'Not available'}
+            </span>
+            {txHash && (
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Copy transaction hash"
+                onClick={() => copyToClipboard(txHash)}
+              >
+                ⧉
+              </button>
             )}
-          </span>
+            {txLink && (
+              <a className="icon-button" href={txLink} target="_blank" rel="noreferrer" aria-label="View on explorer">
+                ↗
+              </a>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="private-block">
-        <h3>Private reveal</h3>
+      <div className={`private-block ${isRevealed ? 'revealed' : ''}`}>
+        <div className="private-header">
+          <h3>{isRevealed ? 'Revealed payload' : 'Private reveal'}</h3>
+          {showUnlocked && <span className="badge unlocked pulse">Unlocked!</span>}
+        </div>
         {isRevealed ? (
-          <p className="private-text">{privateText || 'Fetching private text…'}</p>
+          <div className="revealed-content">
+            <span className="label">Payload</span>
+            <pre className="private-text">{privateText || 'Fetching private text…'}</pre>
+          </div>
         ) : (
           <div className="note">
             <p className="note-text placeholder">🔒 Private text stored on-chain but unreadable until reveal time.</p>
@@ -318,6 +403,8 @@ export default function App() {
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
   const [txById, setTxById] = useState({});
   const [shareNotice, setShareNotice] = useState('');
+  const [celebrationActive, setCelebrationActive] = useState(false);
+  const celebratedRef = useRef(new Set());
 
   const explorerBase = prividium.chain.blockExplorers?.default?.url;
 
@@ -570,23 +657,36 @@ export default function App() {
     }
   };
 
+  const onCelebrate = useCallback(() => {
+    setCelebrationActive(true);
+    window.setTimeout(() => setCelebrationActive(false), 1200);
+  }, []);
+
+  const hasCelebrated = useCallback((id) => celebratedRef.current.has(id), []);
+  const markCelebrated = useCallback((id) => celebratedRef.current.add(id), []);
+
+  const headerContent = (
+    <div className="header-brand">
+      <img className="logo" src={logo} alt="RevealSoon logo" />
+      <div>
+        <h1>RevealSoon</h1>
+        <p className="subtitle">Public teaser now, private reveal later.</p>
+      </div>
+    </div>
+  );
+
   if (route.view === 'message' && route.messageId !== null) {
     const txHash = txById[route.messageId];
     const txLink = txHash ? explorerTxUrl(prividium.chain, txHash) : '';
     return (
       <div className="app">
         <header className="app-header">
-          <div>
-            <h1>RevealSoon</h1>
-            <p className="subtitle">Public teaser now, private reveal later.</p>
-          </div>
+          {headerContent}
           <div className="header-actions">
             <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
               {loginLabel}
             </button>
-            <button className="secondary" onClick={handleAuthorizeWrite}>
-              Enable write
-            </button>
+
           </div>
         </header>
 
@@ -601,7 +701,16 @@ export default function App() {
           txLink={txLink}
           onBack={() => navigate('/')}
           onShare={handleShare}
+          onCelebrate={onCelebrate}
+          hasCelebrated={hasCelebrated}
+          markCelebrated={markCelebrated}
         />
+        <div className={`celebration-layer ${celebrationActive ? 'active' : ''}`} aria-hidden={!celebrationActive}>
+          <span className="celebration-emoji">🎉</span>
+          <span className="celebration-emoji">✨</span>
+          <span className="celebration-emoji">🎊</span>
+          <span className="celebration-emoji">🔓</span>
+        </div>
         {shareNotice && <p className="hint">{shareNotice}</p>}
       </div>
     );
@@ -610,17 +719,12 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <div>
-          <h1>RevealSoon</h1>
-          <p className="subtitle">Public teaser now, private reveal later.</p>
-        </div>
+        {headerContent}
         <div className="header-actions">
           <button className="secondary" onClick={handleAuthorizeRead} disabled={isAuthorized}>
             {loginLabel}
           </button>
-          <button className="secondary" onClick={handleAuthorizeWrite}>
-            Enable write
-          </button>
+
         </div>
       </header>
 
@@ -662,11 +766,30 @@ export default function App() {
             {sortedFeed.length === 0 && !loadingFeed ? (
               <p className="hint">No messages yet.</p>
             ) : (
-              <ul className="activity-list">
-                {sortedFeed.map((item) => (
-                  <MessageRow key={item.id} item={item} nowSeconds={nowSeconds} onOpen={openMessage} />
-                ))}
-              </ul>
+              <div className="activity-table">
+                <div className="activity-grid header-row">
+                  <span>Status</span>
+                  <span>Author</span>
+                  <span>Reveal time</span>
+                  <span>Tx / explorer</span>
+                </div>
+                <ul className="activity-list">
+                  {sortedFeed.map((item) => {
+                    const txHash = txById[item.messageId];
+                    const explorerUrl = txHash ? explorerTxUrl(prividium.chain, txHash) : '';
+                    return (
+                      <MessageRow
+                        key={item.id}
+                        item={item}
+                        nowSeconds={nowSeconds}
+                        onOpen={openMessage}
+                        txHash={txHash}
+                        explorerUrl={explorerUrl}
+                      />
+                    );
+                  })}
+                </ul>
+              </div>
             )}
           </section>
         )}

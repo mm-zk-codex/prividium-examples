@@ -54,3 +54,20 @@ export function explorerTxUrl(chain, hash) {
   if (!baseUrl) return '';
   return `${baseUrl.replace(/\/$/, '')}/tx/${hash}`;
 }
+
+export function truncateMiddle(value, left = 6, right = 4) {
+  if (!value) return '';
+  if (value.length <= left + right + 1) return value;
+  return `${value.slice(0, left)}…${value.slice(-right)}`;
+}
+
+export async function copyToClipboard(value) {
+  if (!value) return false;
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch (error) {
+    console.error('Copy failed', error);
+    return false;
+  }
+}
