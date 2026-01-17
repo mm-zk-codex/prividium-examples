@@ -37,9 +37,6 @@ immediately transfers the minted `msg.value` to them.
 4. On L2, `PrivatePay` decrypts the recipient via `SharedKMS` and forwards the funds, while updating
    `receivedTotal[recipient]` in storage.
 
-> **Note:** `SharedKMS.sol` contains a stub decryption method for demo purposes. In a real Prividium deployment, it
-> should call the confidential KMS precompile while still enforcing the AAD binding and allowlist checks.
-
 ## Running the app
 
 ```bash
@@ -62,6 +59,32 @@ Set these in a `.env` file or your shell:
 - `VITE_REFUND_RECIPIENT_DEFAULT` (optional)
 
 Receiver tab (Prividium auth) also needs the standard Prividium env vars (`VITE_PRIVIDIUM_*`) as in other examples.
+
+## Generating a KMS private key
+
+`SharedKMS` expects a raw 32-byte private key. You can generate one with:
+
+```bash
+openssl rand -hex 32
+```
+
+## Deploying SharedKMS + configuring consumers
+
+1. Deploy the KMS with the Prividium KMS precompile address and your private key:
+
+   ```bash
+   export KMS_PRECOMPILE=0x0000000000000000000000000000000000000000
+   export KMS_PRIVATE_KEY=0x<hex>
+
+   cast deploy ./contracts/SharedKMS.sol \
+     --constructor-args $KMS_PRECOMPILE $KMS_PRIVATE_KEY
+   ```
+
+2. Allowlist the deployed `PrivatePay` contract to decrypt:
+
+   ```bash
+   cast send <SHARED_KMS_ADDRESS> "setConsumer(address,bool)" <PRIVATE_PAY_L2_ADDRESS> true
+   ```
 
 ## Generating the cast command
 

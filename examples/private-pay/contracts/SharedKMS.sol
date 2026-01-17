@@ -1,19 +1,32 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @notice Shared KMS stub that verifies AAD and gates decryption to allowlisted consumers.
-/// @dev In a real Prividium deployment, `decrypt` would call the confidential KMS precompile.
+interface IKmsPrecompile {
+    function getPublicKey(bytes calldata privateKey) external view returns (bytes memory);
+
+    function decrypt(bytes calldata privateKey, bytes calldata aad, bytes calldata ciphertext)
+        external
+        view
+        returns (bytes memory);
+}
+
+/// @notice Shared KMS that verifies AAD and gates decryption to allowlisted consumers.
 contract SharedKMS {
     error NotAllowed();
     error InvalidAad();
+    error DecryptFailed();
 
     address public owner;
+    address public kmsPrecompile;
+    bytes public privateKey;
     bytes public publicKey;
     mapping(address => bool) public allowlist;
 
-    constructor(bytes memory publicKey_) {
+    constructor(address kmsPrecompile_, bytes memory privateKey_) {
         owner = msg.sender;
-        publicKey = publicKey_;
+        kmsPrecompile = kmsPrecompile_;
+        privateKey = privateKey_;
+        publicKey = IKmsPrecompile(kmsPrecompile_).getPublicKey(privateKey_);
     }
 
     modifier onlyOwner() {
@@ -26,12 +39,15 @@ contract SharedKMS {
     }
 
     /// @notice Decrypts ciphertext and returns plaintext bytes.
-    /// @dev This stub expects the ciphertext to already be the plaintext.
     function decrypt(bytes32 context, bytes calldata aad, bytes calldata ciphertext) external view returns (bytes memory) {
         if (!allowlist[msg.sender]) revert NotAllowed();
         (uint256 chainId, address consumer, bytes32 aadContext, ) = _parseAAD(aad);
         if (chainId != block.chainid || consumer != msg.sender || aadContext != context) revert InvalidAad();
-        return ciphertext;
+        try IKmsPrecompile(kmsPrecompile).decrypt(privateKey, aad, ciphertext) returns (bytes memory plaintext) {
+            return plaintext;
+        } catch {
+            revert DecryptFailed();
+        }
     }
 
     function _parseAAD(bytes calldata aad)
