@@ -176,9 +176,48 @@ button:disabled {
   gap: 16px;
 }
 
+.balance-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.balance-value {
+  font-weight: 600;
+  color: #2b3345;
+}
+
+.balance-message {
+  font-weight: 600;
+}
+
+.balance-message.ok {
+  color: #1d6c1b;
+}
+
+.balance-message.warning {
+  color: #8a5b00;
+}
+
+.balance-message.danger {
+  color: #b42318;
+}
+
+.balance-message.neutral {
+  color: #6f7789;
+}
+
 .hint {
   color: #6f7789;
   font-size: 14px;
+}
+
+.hint.warning {
+  color: #b42318;
+  font-weight: 600;
 }
 
 .error {

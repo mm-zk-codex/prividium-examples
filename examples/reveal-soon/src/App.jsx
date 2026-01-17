@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createWalletClient, custom, encodeFunctionData, getContract } from 'viem';
+import { createWalletClient, custom, encodeFunctionData, formatEther, getContract } from 'viem';
 import { createPrividiumClient } from 'prividium';
 import { prividium } from './prividium';
 import { REVEAL_SOON_ABI } from './messageAbi';
@@ -18,6 +18,7 @@ import {
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_REVEAL_SOON_CONTRACT_ADDRESS;
 const FEED_PAGE_SIZE = 50;
+const LOW_BALANCE_THRESHOLD = 1_000_000_000_000_000n; // 0.001 native token
 
 const DELAY_OPTIONS = [
   { label: '1 minute', seconds: 60 },
@@ -390,6 +391,7 @@ function MessagePage({
 export default function App() {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [address, setAddress] = useState('');
+  const [walletClient, setWalletClient] = useState(null);
   const [publicText, setPublicText] = useState('');
   const [privateText, setPrivateText] = useState('');
   const [delaySelection, setDelaySelection] = useState(String(DELAY_OPTIONS[0].seconds));
@@ -398,12 +400,15 @@ export default function App() {
   const [feed, setFeed] = useState([]);
   const [loadingFeed, setLoadingFeed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState('');
   const [receipt, setReceipt] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
   const [txById, setTxById] = useState({});
   const [shareNotice, setShareNotice] = useState('');
   const [celebrationActive, setCelebrationActive] = useState(false);
+  const [balanceWei, setBalanceWei] = useState(null);
+  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
   const celebratedRef = useRef(new Set());
 
   const explorerBase = prividium.chain.blockExplorers?.default?.url;
@@ -437,6 +442,26 @@ export default function App() {
   }, [rpcClient]);
 
   const { nowSeconds, synced } = useChainNow(rpcClient, isAuthorized);
+
+  const refreshBalance = useCallback(
+    async ({ showError } = { showError: false }) => {
+      if (!address) return;
+      setIsRefreshingBalance(true);
+      try {
+        const balance = await rpcClient.getBalance({ address });
+        setBalanceWei(balance);
+      } catch (err) {
+        console.warn('Failed to fetch balance', err);
+        setBalanceWei(null);
+        if (showError) {
+          setError('Unable to fetch wallet balance. Sign in again or refresh.');
+        }
+      } finally {
+        setIsRefreshingBalance(false);
+      }
+    },
+    [address, rpcClient]
+  );
 
   const loadFeed = useCallback(async () => {
     if (!CONTRACT_ADDRESS) {
@@ -492,6 +517,54 @@ export default function App() {
     }
   }, [isAuthorized, loadFeed]);
 
+  useEffect(() => {
+    if (!address) {
+      setBalanceWei(null);
+      return;
+    }
+    refreshBalance();
+  }, [address, refreshBalance]);
+
+  useEffect(() => {
+    if (isAuthorized && address) {
+      refreshBalance();
+    }
+  }, [address, isAuthorized, refreshBalance]);
+
+  useEffect(() => {
+    if (!window.ethereum) return undefined;
+
+    const handleAccountsChanged = (accounts) => {
+      if (!accounts || accounts.length === 0) {
+        setAddress('');
+        setWalletClient(null);
+        setBalanceWei(null);
+        return;
+      }
+      setAddress(accounts[0]);
+    };
+
+    const handleDisconnect = () => {
+      setAddress('');
+      setWalletClient(null);
+      setBalanceWei(null);
+    };
+
+    const handleChainChanged = () => {
+      refreshBalance();
+    };
+
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('disconnect', handleDisconnect);
+    window.ethereum.on('chainChanged', handleChainChanged);
+
+    return () => {
+      window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+      window.ethereum.removeListener('disconnect', handleDisconnect);
+      window.ethereum.removeListener('chainChanged', handleChainChanged);
+    };
+  }, [refreshBalance]);
+
   const handleAuthorizeRead = async () => {
     setError('');
     try {
@@ -522,16 +595,40 @@ export default function App() {
       setError('No injected wallet found. Install MetaMask or a compatible wallet.');
       return;
     }
+    setIsConnecting(true);
     try {
-      const walletClient = createWalletClient({
+      const nextWalletClient = createWalletClient({
         chain: prividium.chain,
         transport: custom(window.ethereum)
       });
-      const [walletAddress] = await walletClient.requestAddresses();
-      setAddress(walletAddress);
+      try {
+        await nextWalletClient.requestPermissions({ eth_accounts: {} });
+      } catch (permissionError) {
+        if (permissionError?.code !== -32601) {
+          throw permissionError;
+        }
+      }
+      let accounts = await nextWalletClient.requestAddresses();
+      if (!accounts || accounts.length === 0) {
+        accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      }
+      if (!accounts || accounts.length === 0) {
+        setError('No account selected / permission not granted. Try Connect again.');
+        setAddress('');
+        setWalletClient(null);
+        return;
+      }
+      setWalletClient(nextWalletClient);
+      setAddress(accounts[0]);
     } catch (err) {
       console.error(err);
-      setError('Wallet connection failed.');
+      if (err?.code === 4001) {
+        setError('Wallet connection was rejected. Please approve permissions to continue.');
+      } else {
+        setError('Wallet connection failed.');
+      }
+    } finally {
+      setIsConnecting(false);
     }
   };
 
@@ -544,6 +641,10 @@ export default function App() {
     if (!publicText.trim() || !privateText.trim()) return;
     if (!address) {
       setError('Connect your wallet to write.');
+      return;
+    }
+    if (!walletClient) {
+      setError('Wallet client not ready. Try reconnecting your wallet.');
       return;
     }
     if (!CONTRACT_ADDRESS) {
@@ -560,11 +661,6 @@ export default function App() {
     setReceipt(null);
 
     try {
-      const walletClient = createWalletClient({
-        chain: prividium.chain,
-        transport: custom(window.ethereum)
-      });
-
       const data = encodeFunctionData({
         abi: REVEAL_SOON_ABI,
         functionName: 'createMessage',
@@ -620,6 +716,7 @@ export default function App() {
       setPublicText('');
       setPrivateText('');
       await loadFeed();
+      await refreshBalance();
     } catch (err) {
       console.error(err);
       setError('Transaction failed. Check permissions and wallet configuration.');
@@ -633,6 +730,21 @@ export default function App() {
   }, [feed]);
 
   const loginLabel = isAuthorized ? 'Signed in' : 'Sign in for read access';
+  const nativeSymbol = prividium.chain.nativeCurrency?.symbol ?? 'ETH';
+  const formattedBalance = balanceWei === null ? '—' : `${Number(formatEther(balanceWei)).toFixed(4)} ${nativeSymbol}`;
+  const balanceIsZero = balanceWei === 0n;
+  const hasLowBalance = balanceWei !== null && balanceWei > 0n && balanceWei < LOW_BALANCE_THRESHOLD;
+  const balanceState = balanceWei === null ? 'neutral' : balanceIsZero ? 'danger' : hasLowBalance ? 'warning' : 'ok';
+  const balanceMessage =
+    balanceWei === null
+      ? 'Balance unavailable'
+      : balanceIsZero
+      ? 'No balance for gas — Create will fail'
+      : hasLowBalance
+      ? 'Low balance — may fail'
+      : 'Balance OK';
+  const createDisabled =
+    !address || !walletClient || isConnecting || submitting || !publicText.trim() || !privateText.trim() || balanceIsZero;
 
   const navigate = useCallback((path) => {
     window.history.pushState({}, '', path);
@@ -799,8 +911,8 @@ export default function App() {
             <h2>Create</h2>
             <div className="wallet-row">
               <span>{address ? `Wallet: ${formatAddress(address)}` : 'Wallet: not connected'}</span>
-              <button className="secondary" onClick={connectWallet}>
-                Connect wallet
+              <button className="secondary" onClick={connectWallet} disabled={isConnecting}>
+                {isConnecting ? 'Connecting…' : 'Connect wallet'}
               </button>
             </div>
             <p className="hint">Login state: {isAuthorized ? 'Authorized' : 'Not signed in'}</p>
@@ -854,10 +966,27 @@ export default function App() {
 
             <button
               onClick={sendMessage}
-              disabled={!address || submitting || !publicText.trim() || !privateText.trim()}
+              disabled={createDisabled}
             >
               {submitting ? 'Storing…' : 'Create message'}
             </button>
+            {address && (
+              <div className="balance-row">
+                <span className="label">Balance</span>
+                <span className="balance-value">{formattedBalance}</span>
+                <span className={`balance-message ${balanceState}`}>{balanceMessage}</span>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Refresh balance"
+                  onClick={() => refreshBalance({ showError: true })}
+                  disabled={isRefreshingBalance}
+                >
+                  ⟳
+                </button>
+              </div>
+            )}
+            {balanceIsZero && <p className="hint warning">Add funds to pay gas.</p>}
 
             {receipt && (
               <div className="receipt">
