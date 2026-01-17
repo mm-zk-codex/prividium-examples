@@ -1,32 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-interface IKmsPrecompile {
-    function getPublicKey(bytes calldata privateKey) external view returns (bytes memory);
-
-    function decrypt(bytes calldata privateKey, bytes calldata aad, bytes calldata ciphertext)
-        external
-        view
-        returns (bytes memory);
-}
-
 /// @notice Shared KMS that verifies AAD and gates decryption to allowlisted consumers.
 contract SharedKMS {
     error NotAllowed();
     error InvalidAad();
-    error DecryptFailed();
+    error InvalidCiphertext();
 
     address public owner;
-    address public kmsPrecompile;
     bytes public privateKey;
     bytes public publicKey;
     mapping(address => bool) public allowlist;
 
-    constructor(address kmsPrecompile_, bytes memory privateKey_) {
+    constructor(bytes memory privateKey_) {
         owner = msg.sender;
-        kmsPrecompile = kmsPrecompile_;
         privateKey = privateKey_;
-        publicKey = IKmsPrecompile(kmsPrecompile_).getPublicKey(privateKey_);
+        publicKey = privateKey_;
     }
 
     modifier onlyOwner() {
@@ -43,11 +32,18 @@ contract SharedKMS {
         if (!allowlist[msg.sender]) revert NotAllowed();
         (uint256 chainId, address consumer, bytes32 aadContext, ) = _parseAAD(aad);
         if (chainId != block.chainid || consumer != msg.sender || aadContext != context) revert InvalidAad();
-        try IKmsPrecompile(kmsPrecompile).decrypt(privateKey, aad, ciphertext) returns (bytes memory plaintext) {
-            return plaintext;
-        } catch {
-            revert DecryptFailed();
+        if (ciphertext.length != 64) revert InvalidCiphertext();
+
+        bytes32 nonce;
+        bytes32 masked;
+        assembly {
+            nonce := calldataload(ciphertext.offset)
+            masked := calldataload(add(ciphertext.offset, 32))
         }
+
+        bytes32 mask = keccak256(bytes.concat(privateKey, aad, nonce));
+        bytes32 plaintext = masked ^ mask;
+        return abi.encodePacked(plaintext);
     }
 
     function _parseAAD(bytes calldata aad)

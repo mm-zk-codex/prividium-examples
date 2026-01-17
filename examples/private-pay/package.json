@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@noble/curves": "^1.5.0",
     "prividium": "0.1.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

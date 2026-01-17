@@ -29,7 +29,7 @@ immediately transfers the minted `msg.value` to them.
    )
    ```
 
-2. The recipient address is encrypted with the SharedKMS public key.
+2. The recipient address is encrypted with the SharedKMS key.
 3. The L1 sender submits `Bridgehub.requestL2TransactionDirect` with:
    - `l2Contract = PRIVATE_PAY_L2_ADDRESS`
    - `l2Value = amount`
@@ -52,7 +52,7 @@ Set these in a `.env` file or your shell:
 - `VITE_L2_CHAIN_ID`
 - `VITE_BRIDGEHUB_ADDRESS`
 - `VITE_PRIVATE_PAY_L2_ADDRESS`
-- `VITE_PRIVATE_PAY_PUBLIC_KEY`
+- `VITE_PRIVATE_PAY_PUBLIC_KEY` (must match the key configured in `SharedKMS`)
 - `VITE_L2_GAS_LIMIT` (optional)
 - `VITE_L2_GAS_PER_PUBDATA` (optional, defaults to 800)
 - `VITE_MINT_VALUE_DEFAULT` (optional)
@@ -60,9 +60,9 @@ Set these in a `.env` file or your shell:
 
 Receiver tab (Prividium auth) also needs the standard Prividium env vars (`VITE_PRIVIDIUM_*`) as in other examples.
 
-## Generating a KMS private key
+## Generating a KMS key
 
-`SharedKMS` expects a raw 32-byte private key. You can generate one with:
+`SharedKMS` expects a raw 32-byte key. You can generate one with:
 
 ```bash
 openssl rand -hex 32
@@ -70,14 +70,13 @@ openssl rand -hex 32
 
 ## Deploying SharedKMS + configuring consumers
 
-1. Deploy the KMS with the Prividium KMS precompile address and your private key:
+1. Deploy the KMS with your private key:
 
    ```bash
-   export KMS_PRECOMPILE=0x0000000000000000000000000000000000000000
    export KMS_PRIVATE_KEY=0x<hex>
 
    cast deploy ./contracts/SharedKMS.sol \
-     --constructor-args $KMS_PRECOMPILE $KMS_PRIVATE_KEY
+     --constructor-args $KMS_PRIVATE_KEY
    ```
 
 2. Allowlist the deployed `PrivatePay` contract to decrypt:
@@ -85,6 +84,9 @@ openssl rand -hex 32
    ```bash
    cast send <SHARED_KMS_ADDRESS> "setConsumer(address,bool)" <PRIVATE_PAY_L2_ADDRESS> true
    ```
+
+> **Note:** This example uses a keccak256-based XOR stream with the key stored in `SharedKMS` for on-chain decryption.
+> It is intentionally minimal to keep the demo self-contained and does **not** provide production-grade privacy.
 
 ## Generating the cast command
 

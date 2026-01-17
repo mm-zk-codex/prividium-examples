@@ -247,7 +247,7 @@ export default function App() {
       );
 
       const plaintextHex = encodeAbiParameters([{ type: 'address' }], [recipient]);
-      const { ciphertextHex } = await encryptRecipient({
+      const { ciphertextHex } = encryptRecipient({
         recipientHex: recipient,
         aadHex,
         publicKeyHex: PUBLIC_KEY,
