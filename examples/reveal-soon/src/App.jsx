@@ -601,7 +601,13 @@ export default function App() {
         chain: prividium.chain,
         transport: custom(window.ethereum)
       });
-      await nextWalletClient.requestPermissions({ eth_accounts: {} });
+      try {
+        await nextWalletClient.requestPermissions({ eth_accounts: {} });
+      } catch (permissionError) {
+        if (permissionError?.code !== -32601) {
+          throw permissionError;
+        }
+      }
       let accounts = await nextWalletClient.requestAddresses();
       if (!accounts || accounts.length === 0) {
         accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
