@@ -118,6 +118,20 @@ input {
   font-size: 0.9rem;
 }
 
+.input-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -143,6 +157,18 @@ button {
 button.secondary {
   background: #e2e8f0;
   color: #0f172a;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid #cbd5f5;
+  color: #0f172a;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+button.ghost:hover {
+  background: #f8fafc;
 }
 
 button:disabled {
@@ -189,6 +215,10 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.row > div {
+  min-width: 0;
+}
+
 .row span {
   min-width: 120px;
   font-size: 0.85rem;
@@ -207,6 +237,23 @@ button:disabled {
 
 .card.highlight .row code {
   background: rgba(255, 255, 255, 0.2);
+}
+
+.value-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.mono-block {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  width: 100%;
 }
 
 .wrap {
@@ -252,6 +299,11 @@ button:disabled {
   border-radius: 10px;
 }
 
+.warning.error {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
 .error {
   color: #b91c1c;
 }
@@ -271,6 +323,26 @@ button:disabled {
   display: block;
   font-size: 0.8rem;
   color: #64748b;
+}
+
+.balance-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #475569;
+  margin-top: 8px;
+}
+
+.ghost-link {
+  color: #2563eb;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.ghost-link:hover {
+  text-decoration: underline;
 }
 
 .deposit-list {

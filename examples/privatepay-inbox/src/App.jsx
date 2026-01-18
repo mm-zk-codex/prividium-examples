@@ -7,11 +7,13 @@ import {
   defineChain,
   encodeFunctionData,
   encodePacked,
+  formatEther,
   getAddress,
   hexToBytes,
   http,
   isAddress,
   keccak256,
+  parseEther,
   toHex
 } from 'viem';
 import {
@@ -38,6 +40,59 @@ import { copyToClipboard, formatAddress, formatNumber, formatTimestamp } from '.
 
 const CONTEXT_HASH = keccak256(toHex(CONTEXT_STRING));
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MINT_BUFFER_WEI = 50_000_000_000_000n;
+const GAS_BUFFER_WEI_PER_UNIT = 1n;
+const L1_LOW_BALANCE_THRESHOLD = parseEther('0.001');
+const L2_LOW_BALANCE_THRESHOLD = parseEther('0.0001');
+const MAX_INLINE_CIPHERTEXT = 220;
+
+const bridgehubAbi = [
+  {
+    type: 'function',
+    name: 'requestL2TransactionDirect',
+    stateMutability: 'payable',
+    inputs: [
+      {
+        name: 'request',
+        type: 'tuple',
+        components: [
+          { name: 'chainId', type: 'uint256' },
+          { name: 'mintValue', type: 'uint256' },
+          { name: 'l2Contract', type: 'address' },
+          { name: 'l2Value', type: 'uint256' },
+          { name: 'l2Calldata', type: 'bytes' },
+          { name: 'l2GasLimit', type: 'uint256' },
+          { name: 'l2GasPerPubdataByteLimit', type: 'uint256' },
+          { name: 'factoryDeps', type: 'bytes[]' },
+          { name: 'refundRecipient', type: 'address' }
+        ]
+      }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'l2TransactionBaseCost',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'request',
+        type: 'tuple',
+        components: [
+          { name: 'chainId', type: 'uint256' },
+          { name: 'gasPrice', type: 'uint256' },
+          { name: 'l2GasLimit', type: 'uint256' },
+          { name: 'l2GasPerPubdataByteLimit', type: 'uint256' },
+
+        ]
+      }
+    ],
+    outputs: []
+
+  }
+
+
+];
 
 const l1Chain = defineChain({
   id: L1_CHAIN_ID,
@@ -58,11 +113,137 @@ function randomHex32() {
   return bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
+async function ensureChain(walletClient, requiredChainId, label) {
+  if (!walletClient) {
+    return { ok: false, message: 'Wallet not connected.' };
+  }
+  const currentChainId = await walletClient.getChainId();
+  if (Number(currentChainId) === Number(requiredChainId)) {
+    return { ok: true, message: '' };
+  }
+  try {
+    await walletClient.switchChain({ id: requiredChainId });
+    return { ok: true, message: '' };
+  } catch (error) {
+    console.error('Failed to switch chain', error);
+    return {
+      ok: false,
+      message: `Wrong network. Please switch your wallet to ${label} (chain ${requiredChainId}).`
+    };
+  }
+}
+
+function getL1ExplorerTxUrl(hash) {
+  if (!hash) return '';
+  if (Number(L1_CHAIN_ID) === 11155111) {
+    return `https://sepolia.etherscan.io/tx/${hash}`;
+  }
+  if (Number(L1_CHAIN_ID) === 1) {
+    return `https://etherscan.io/tx/${hash}`;
+  }
+  return '';
+}
+
+function parseEthInput(value) {
+  if (!value) return { value: 0n, error: '' };
+  try {
+    return { value: parseEther(value), error: '' };
+  } catch (error) {
+    return { value: 0n, error: 'Enter a valid ETH amount.' };
+  }
+}
+
+function useChainWallet({ chain, chainId, label, beforeConnect, onConnect }) {
+  const [walletClient, setWalletClient] = useState(null);
+  const [walletAddress, setWalletAddress] = useState('');
+  const [chainWarning, setChainWarning] = useState('');
+  const [connectedChainId, setConnectedChainId] = useState(null);
+
+  const connectWallet = useCallback(async () => {
+    if (!window.ethereum) {
+      setChainWarning('No injected wallet found.');
+      return;
+    }
+    if (beforeConnect) {
+      const ready = await beforeConnect();
+      if (!ready) return;
+    }
+    try {
+      const client = createWalletClient({
+        chain,
+        transport: custom(window.ethereum)
+      });
+      await client.requestPermissions({ eth_accounts: {} });
+      const addresses = await client.requestAddresses();
+      const address = addresses?.[0];
+      if (!address) {
+        setChainWarning('No wallet address returned.');
+        return;
+      }
+      const normalized = getAddress(address);
+      setWalletClient(client);
+      setWalletAddress(normalized);
+      const currentChainId = await client.getChainId();
+      setConnectedChainId(Number(currentChainId));
+      if (Number(currentChainId) !== Number(chainId)) {
+        setChainWarning(`Wrong network. Please switch to ${label} (chain ${chainId}).`);
+      } else {
+        setChainWarning('');
+      }
+      if (onConnect) {
+        onConnect(normalized);
+      }
+    } catch (error) {
+      console.error('Wallet connect failed', error);
+      setChainWarning('Wallet connection failed.');
+    }
+  }, [beforeConnect, chain, chainId, label, onConnect]);
+
+  const switchChain = useCallback(async () => {
+    if (!walletClient) return;
+    try {
+      await walletClient.switchChain({ id: chainId });
+      const currentChainId = await walletClient.getChainId();
+      setConnectedChainId(Number(currentChainId));
+      if (Number(currentChainId) === Number(chainId)) {
+        setChainWarning('');
+      }
+    } catch (error) {
+      console.error('Failed to switch chain', error);
+      setChainWarning(`Please switch network in your wallet to ${label} (chain ${chainId}).`);
+    }
+  }, [walletClient, chainId, label]);
+
+  const refreshChain = useCallback(async () => {
+    if (!walletClient) return;
+    const currentChainId = await walletClient.getChainId();
+    setConnectedChainId(Number(currentChainId));
+    if (Number(currentChainId) !== Number(chainId)) {
+      setChainWarning(`Wrong network. Please switch to ${label} (chain ${chainId}).`);
+    } else {
+      setChainWarning('');
+    }
+  }, [walletClient, chainId, label]);
+
+  return {
+    walletClient,
+    walletAddress,
+    chainWarning,
+    connectedChainId,
+    connectWallet,
+    switchChain,
+    refreshChain,
+    setChainWarning
+  };
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('send');
   const [recipientAddress, setRecipientAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [mintValue, setMintValue] = useState('');
+  const [l2GasLimitInput, setL2GasLimitInput] = useState(L2_GAS_LIMIT.toString());
+  const [mintValueManual, setMintValueManual] = useState(false);
   const [refundRecipient, setRefundRecipient] = useState('');
   const [recipientPubKey, setRecipientPubKey] = useState('');
   const [pubKeyStatus, setPubKeyStatus] = useState('');
@@ -70,11 +251,17 @@ export default function App() {
   const [encryptionError, setEncryptionError] = useState('');
   const [showSecret, setShowSecret] = useState(false);
   const [copyNotice, setCopyNotice] = useState('');
+  const [showCiphertext, setShowCiphertext] = useState(false);
+  const [mintValueError, setMintValueError] = useState('');
+  const [amountError, setAmountError] = useState('');
 
   const [isAuthorized, setIsAuthorized] = useState(prividium.isAuthorized());
-  const [walletClient, setWalletClient] = useState(null);
-  const [walletAddress, setWalletAddress] = useState('');
-  const [chainWarning, setChainWarning] = useState('');
+  const [l1RegisterStatus, setL1RegisterStatus] = useState('');
+  const [l1RegisterTx, setL1RegisterTx] = useState('');
+  const [l1SendStatus, setL1SendStatus] = useState('');
+  const [l1SendTx, setL1SendTx] = useState('');
+  const [l1Balance, setL1Balance] = useState(null);
+  const [l2Balance, setL2Balance] = useState(null);
   const [hasPrivKey, setHasPrivKey] = useState(false);
   const [privKeyHex, setPrivKeyHex] = useState('');
   const [generatedKeys, setGeneratedKeys] = useState(null);
@@ -82,11 +269,30 @@ export default function App() {
   const [decryptable, setDecryptable] = useState([]);
   const [depositError, setDepositError] = useState('');
   const [loadingDeposits, setLoadingDeposits] = useState(false);
-  const [balanceWarning, setBalanceWarning] = useState('');
   const [claimingIndex, setClaimingIndex] = useState(null);
   const [claimTo, setClaimTo] = useState('');
   const [lastClaimTx, setLastClaimTx] = useState('');
   const [lastPrivKeyTx, setLastPrivKeyTx] = useState('');
+
+  const l1Wallet = useChainWallet({
+    chain: l1Chain,
+    chainId: L1_CHAIN_ID,
+    label: 'L1'
+  });
+  const l2Wallet = useChainWallet({
+    chain: prividium.chain,
+    chainId: L2_CHAIN_ID,
+    label: 'L2',
+    beforeConnect: async () => {
+      const ready = await authorize();
+      if (!ready) return false;
+      //await prividium.addNetworkToWallet();
+      return true;
+    },
+    onConnect: (address) => {
+      setClaimTo(address);
+    }
+  });
 
   const l1Client = useMemo(() => {
     return createPublicClient({
@@ -157,15 +363,43 @@ export default function App() {
     };
   }, [recipientAddress, l1Client]);
 
+  const parsedAmount = useMemo(() => parseEthInput(amount), [amount]);
+  const parsedGasLimit = useMemo(() => {
+    try {
+      return { value: BigInt(l2GasLimitInput || '0'), error: '' };
+    } catch (error) {
+      return { value: 0n, error: 'Enter a valid gas limit.' };
+    }
+  }, [l2GasLimitInput]);
+
+  const recommendedMintValueWei = useMemo(() => {
+    return (
+      parsedAmount.value +
+      MINT_BUFFER_WEI +
+      parsedGasLimit.value * GAS_BUFFER_WEI_PER_UNIT
+    );
+  }, [parsedAmount.value, parsedGasLimit.value]);
+
   useEffect(() => {
     if (!amount) {
-      setMintValue('');
+      setAmountError('');
       return;
     }
-    if (!mintValue) {
-      setMintValue(amount);
+    setAmountError(parsedAmount.error);
+  }, [amount, parsedAmount.error]);
+
+  useEffect(() => {
+    if (!mintValueManual) {
+      setMintValue(formatEther(recommendedMintValueWei));
+      setMintValueError('');
     }
-  }, [amount, mintValue]);
+  }, [mintValueManual, recommendedMintValueWei]);
+
+  useEffect(() => {
+    if (mintValueManual) {
+      setMintValueError(parseEthInput(mintValue).error);
+    }
+  }, [mintValue, mintValueManual]);
 
   const l2Calldata = useMemo(() => {
     if (!payload) return '';
@@ -177,10 +411,24 @@ export default function App() {
   }, [payload]);
 
   const castCommand = useMemo(() => {
-    if (!payload || !amount || !mintValue) return '';
-    const refund = refundRecipient || walletAddress || ZERO_ADDRESS;
-    return `cast send ${BRIDGEHUB_ADDRESS} "requestL2TransactionDirect((uint256,uint256,address,uint256,bytes,uint256,uint256,bytes[],address))" '(${L2_CHAIN_ID},${mintValue},${PRIVATEPAY_INBOX_L2_ADDRESS},${amount},${l2Calldata},${L2_GAS_LIMIT.toString()},${L2_GAS_PER_PUBDATA.toString()},[],${refund})' --value ${mintValue} --private-key $PRIVATE_KEY`;
-  }, [payload, amount, mintValue, refundRecipient, walletAddress, l2Calldata]);
+    if (!payload || !amount || mintValueError || parsedAmount.error || parsedGasLimit.error) {
+      return '';
+    }
+    const refund = refundRecipient || l2Wallet.walletAddress || ZERO_ADDRESS;
+    const mintValueWei = parseEthInput(mintValue).value;
+    return `cast send ${BRIDGEHUB_ADDRESS} "requestL2TransactionDirect((uint256,uint256,address,uint256,bytes,uint256,uint256,bytes[],address))" '(${L2_CHAIN_ID},${mintValueWei.toString()},${PRIVATEPAY_INBOX_L2_ADDRESS},${parsedAmount.value.toString()},${l2Calldata},${parsedGasLimit.value.toString()},${L2_GAS_PER_PUBDATA.toString()},[],${refund})' --value ${mintValueWei.toString()} --private-key $PRIVATE_KEY`;
+  }, [
+    payload,
+    amount,
+    mintValue,
+    mintValueError,
+    parsedAmount.error,
+    parsedAmount.value,
+    refundRecipient,
+    l2Wallet.walletAddress,
+    l2Calldata,
+    parsedGasLimit.value
+  ]);
 
   const copyValue = useCallback(async (value) => {
     const success = await copyToClipboard(value);
@@ -220,9 +468,11 @@ export default function App() {
         secret,
         commitment,
         ciphertext,
+        aad: bytesToHex(aad),
         recipient: recipientAddress
       });
       setShowSecret(false);
+      setShowCiphertext(false);
     } catch (error) {
       console.error('Encryption failed', error);
       setEncryptionError('Failed to encrypt payload.');
@@ -246,69 +496,25 @@ export default function App() {
     }
   }, []);
 
-  const connectWallet = useCallback(async () => {
-    const ready = await authorize();
-    if (!ready) return;
-    if (!window.ethereum) {
-      setChainWarning('No injected wallet found.');
-      return;
-    }
-    try {
-      //await prividium.addNetworkToWallet();
-      await window.ethereum.request({
-        method: 'wallet_requestPermissions',
-        params: [{ eth_accounts: {} }]
-      });
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      const address = accounts?.[0];
-      if (!address) {
-        setChainWarning('No wallet address returned.');
-        return;
-      }
-      const client = createWalletClient({
-        chain: prividium.chain,
-        transport: custom(window.ethereum)
-      });
-      setWalletClient(client);
-      setWalletAddress(getAddress(address));
-      setClaimTo(getAddress(address));
-      const chainId = await client.getChainId();
-      if (Number(chainId) !== Number(L2_CHAIN_ID)) {
-        setChainWarning(`Connected chain ${chainId}. Switch to L2 chain ${L2_CHAIN_ID}.`);
-      } else {
-        setChainWarning('');
-      }
-      setBalanceWarning('');
-    } catch (error) {
-      console.error('Wallet connect failed', error);
-      setChainWarning('Wallet connection failed.');
-    }
-  }, [authorize]);
+  const l2WalletAddress = l2Wallet.walletAddress;
+  const l1WalletAddress = l1Wallet.walletAddress;
+  const l1MintValueWei = useMemo(() => parseEthInput(mintValue).value, [mintValue]);
 
-  const refreshPrivKeyStatus = useCallback(async () => {
-    setDepositError('');
-    if (!walletAddress) return;
-    if (!prividium.isAuthorized()) {
-      setDepositError('Authorize Prividium to read private storage.');
-      return;
-    }
-    try {
-      const exists = await l2PublicClient.readContract({
-        address: PRIVATEPAY_INBOX_L2_ADDRESS,
-        abi: privatePayInboxAbi,
-        functionName: 'hasMyPrivKey',
-        account: walletAddress
-      });
-      setHasPrivKey(Boolean(exists));
-    } catch (error) {
-      console.error('Failed to read priv key status', error);
-      setDepositError('Unable to read private key status.');
-    }
-  }, [walletAddress, l2PublicClient]);
+  const refreshL1Balance = useCallback(async () => {
+    if (!l1WalletAddress) return;
+    const balance = await l1Client.getBalance({ address: l1WalletAddress });
+    setL1Balance(balance);
+  }, [l1Client, l1WalletAddress]);
+
+  const refreshL2Balance = useCallback(async () => {
+    if (!l2WalletAddress) return;
+    const balance = await l2PublicClient.getBalance({ address: l2WalletAddress });
+    setL2Balance(balance);
+  }, [l2PublicClient, l2WalletAddress]);
 
   const fetchPrivKey = useCallback(async () => {
     setDepositError('');
-    if (!walletAddress) return;
+    if (!l2WalletAddress) return;
     if (!prividium.isAuthorized()) {
       setDepositError('Authorize Prividium to read private storage.');
       return;
@@ -318,7 +524,7 @@ export default function App() {
         address: PRIVATEPAY_INBOX_L2_ADDRESS,
         abi: privatePayInboxAbi,
         functionName: 'getMyPrivKey',
-        account: walletAddress
+        account: l2WalletAddress
       });
       if (!key || key.length <= 2) {
         setDepositError('No private key stored yet.');
@@ -330,32 +536,62 @@ export default function App() {
       console.error('Failed to fetch private key', error);
       setDepositError('Unable to fetch private key.');
     }
-  }, [walletAddress, l2PublicClient]);
+  }, [l2WalletAddress, l2PublicClient]);
+
+  const refreshPrivKeyStatus = useCallback(async () => {
+    setDepositError('');
+    if (!l2WalletAddress) return;
+    if (!prividium.isAuthorized()) {
+      setDepositError('Authorize Prividium to read private storage.');
+      return;
+    }
+    try {
+      const exists = await l2PublicClient.readContract({
+        address: PRIVATEPAY_INBOX_L2_ADDRESS,
+        abi: privatePayInboxAbi,
+        functionName: 'hasMyPrivKey',
+        account: l2WalletAddress
+      });
+      setHasPrivKey(Boolean(exists));
+      if (exists) {
+        await fetchPrivKey();
+      }
+    } catch (error) {
+      console.error('Failed to read priv key status', error);
+      setDepositError('Unable to read private key status.');
+    }
+  }, [l2WalletAddress, l2PublicClient, fetchPrivKey]);
 
   const sendL2Transaction = useCallback(
     async ({ to, data, value = 0n }) => {
-      if (!walletClient || !walletAddress) {
+      if (!l2Wallet.walletClient || !l2WalletAddress) {
         throw new Error('Wallet not connected');
       }
+      const chainCheck = await ensureChain(l2Wallet.walletClient, L2_CHAIN_ID, 'L2');
+      if (!chainCheck.ok) {
+        l2Wallet.setChainWarning(chainCheck.message);
+        throw new Error(chainCheck.message);
+      }
+      l2Wallet.setChainWarning('');
       if (!prividium.isAuthorized()) {
         throw new Error('Prividium authorization required');
       }
-      const nonce = await l2PublicClient.getTransactionCount({ address: walletAddress });
+      const nonce = await l2PublicClient.getTransactionCount({ address: l2WalletAddress });
       const gas = await l2PublicClient.estimateGas({
-        account: walletAddress,
+        account: l2WalletAddress,
         to,
         data,
         value
       });
       const gasPrice = await l2PublicClient.getGasPrice();
       await prividium.authorizeTransaction({
-        walletAddress,
+        walletAddress: l2WalletAddress,
         toAddress: to,
         nonce: Number(nonce),
         calldata: data
       });
-      return walletClient.sendTransaction({
-        account: walletAddress,
+      return l2Wallet.walletClient.sendTransaction({
+        account: l2WalletAddress,
         to,
         data,
         nonce,
@@ -364,7 +600,7 @@ export default function App() {
         value
       });
     },
-    [walletClient, walletAddress, l2PublicClient]
+    [l2Wallet.walletClient, l2WalletAddress, l2Wallet, l2PublicClient]
   );
 
   const storePrivKey = useCallback(async () => {
@@ -383,15 +619,16 @@ export default function App() {
       setPrivKeyHex(generatedKeys.privKey);
       setHasPrivKey(true);
       setDepositError('');
+      await refreshL2Balance();
     } catch (error) {
       console.error('Failed to store private key', error);
       setDepositError('Failed to store private key.');
     }
-  }, [generatedKeys, sendL2Transaction]);
+  }, [generatedKeys, sendL2Transaction, refreshL2Balance]);
 
   const loadDeposits = useCallback(async () => {
     setDepositError('');
-    if (!walletAddress || !privKeyHex) return;
+    if (!l2WalletAddress || !privKeyHex) return;
     if (!prividium.isAuthorized()) {
       setDepositError('Authorize Prividium to read deposits.');
       return;
@@ -443,7 +680,7 @@ export default function App() {
           }
           const recipient = bytesToHex(plaintext.slice(0, 20));
           const secret = bytesToHex(plaintext.slice(20, 52));
-          if (getAddress(recipient) === getAddress(walletAddress)) {
+          if (getAddress(recipient) === getAddress(l2WalletAddress)) {
             matches.push({
               index: header.index,
               amount: header.amount,
@@ -459,19 +696,14 @@ export default function App() {
       }
       setDecryptable(matches);
 
-      const balance = await l2PublicClient.getBalance({ address: walletAddress });
-      if (balance === 0n) {
-        setBalanceWarning('Your L2 balance is 0. You will need gas to claim.');
-      } else {
-        setBalanceWarning('');
-      }
+      await refreshL2Balance();
     } catch (error) {
       console.error('Failed to load deposits', error);
       setDepositError('Unable to load deposits.');
     } finally {
       setLoadingDeposits(false);
     }
-  }, [walletAddress, privKeyHex, l2PublicClient, buildAad]);
+  }, [l2WalletAddress, privKeyHex, l2PublicClient, buildAad, refreshL2Balance]);
 
   const claimDeposit = useCallback(
     async (deposit) => {
@@ -492,6 +724,7 @@ export default function App() {
           data
         });
         setLastClaimTx(hash);
+        await refreshL2Balance();
         await loadDeposits();
       } catch (error) {
         console.error('Claim failed', error);
@@ -500,14 +733,26 @@ export default function App() {
         setClaimingIndex(null);
       }
     },
-    [sendL2Transaction, claimTo, loadDeposits]
+    [sendL2Transaction, claimTo, loadDeposits, refreshL2Balance]
   );
 
   useEffect(() => {
-    if (walletAddress && isAuthorized) {
+    if (l2WalletAddress && isAuthorized) {
       refreshPrivKeyStatus();
     }
-  }, [walletAddress, isAuthorized, refreshPrivKeyStatus]);
+  }, [l2WalletAddress, isAuthorized, refreshPrivKeyStatus]);
+
+  useEffect(() => {
+    if (l1WalletAddress) {
+      refreshL1Balance();
+    }
+  }, [l1WalletAddress, refreshL1Balance, l1Wallet.connectedChainId]);
+
+  useEffect(() => {
+    if (l2WalletAddress) {
+      refreshL2Balance();
+    }
+  }, [l2WalletAddress, refreshL2Balance, l2Wallet.connectedChainId]);
 
   useEffect(() => {
     if (privKeyHex) {
@@ -516,6 +761,108 @@ export default function App() {
   }, [privKeyHex, loadDeposits]);
 
   const totalIncoming = decryptable.reduce((sum, item) => sum + item.amount, 0n);
+  const l1BalanceLow = l1Balance !== null && l1Balance < L1_LOW_BALANCE_THRESHOLD;
+  const l2BalanceLow = l2Balance !== null && l2Balance < L2_LOW_BALANCE_THRESHOLD;
+  const l1BalanceEmpty = l1Balance === 0n;
+  const l2BalanceEmpty = l2Balance === 0n;
+  const l1InsufficientMint = l1Balance !== null && l1Balance < l1MintValueWei;
+
+  const sendL1Register = useCallback(async () => {
+    if (!generatedKeys?.pubKey) return;
+    if (!l1Wallet.walletClient || !l1WalletAddress) {
+      setL1RegisterStatus('Connect an L1 wallet to register.');
+      return;
+    }
+    const chainCheck = await ensureChain(l1Wallet.walletClient, L1_CHAIN_ID, 'L1');
+    if (!chainCheck.ok) {
+      l1Wallet.setChainWarning(chainCheck.message);
+      setL1RegisterStatus(chainCheck.message);
+      return;
+    }
+    l1Wallet.setChainWarning('');
+    try {
+      setL1RegisterStatus('Submitting transaction...');
+      const data = encodeFunctionData({
+        abi: keyDirectoryAbi,
+        functionName: 'register',
+        args: [generatedKeys.pubKey]
+      });
+      const hash = await l1Wallet.walletClient.sendTransaction({
+        account: l1WalletAddress,
+        to: KEY_DIRECTORY_L1_ADDRESS,
+        data
+      });
+      setL1RegisterTx(hash);
+      setL1RegisterStatus('Submitted');
+      await refreshL1Balance();
+    } catch (error) {
+      console.error('Failed to register key', error);
+      setL1RegisterStatus('Registration failed.');
+    }
+  }, [generatedKeys, l1Wallet.walletClient, l1WalletAddress, l1Wallet, refreshL1Balance]);
+
+  const sendBridgehubWallet = useCallback(async () => {
+    if (!payload || parsedAmount.error || mintValueError || parsedGasLimit.error) return;
+    if (!l1Wallet.walletClient || !l1WalletAddress) {
+      setL1SendStatus('Connect an L1 wallet to send.');
+      return;
+    }
+    const chainCheck = await ensureChain(l1Wallet.walletClient, L1_CHAIN_ID, 'L1');
+    if (!chainCheck.ok) {
+      l1Wallet.setChainWarning(chainCheck.message);
+      setL1SendStatus(chainCheck.message);
+      return;
+    }
+    l1Wallet.setChainWarning('');
+    try {
+      setL1SendStatus('Submitting transaction...');
+      const refund = refundRecipient || l2WalletAddress || ZERO_ADDRESS;
+      const data = encodeFunctionData({
+        abi: bridgehubAbi,
+        functionName: 'requestL2TransactionDirect',
+        args: [
+          {
+            chainId: BigInt(L2_CHAIN_ID),
+            mintValue: l1MintValueWei,
+            l2Contract: PRIVATEPAY_INBOX_L2_ADDRESS,
+            l2Value: parsedAmount.value,
+            l2Calldata,
+            l2GasLimit: parsedGasLimit.value,
+            l2GasPerPubdataByteLimit: L2_GAS_PER_PUBDATA,
+            factoryDeps: [],
+            refundRecipient: refund
+          }
+        ]
+      });
+      const hash = await l1Wallet.walletClient.sendTransaction({
+        account: l1WalletAddress,
+        to: BRIDGEHUB_ADDRESS,
+        data,
+        value: l1MintValueWei
+      });
+      setL1SendTx(hash);
+      setL1SendStatus('Submitted');
+      await refreshL1Balance();
+    } catch (error) {
+      console.error('Bridgehub send failed', error);
+      setL1SendStatus('Submission failed.');
+    }
+  }, [
+    payload,
+    parsedAmount.error,
+    mintValueError,
+    parsedGasLimit.error,
+    l1Wallet.walletClient,
+    l1WalletAddress,
+    l1Wallet,
+    refundRecipient,
+    l2WalletAddress,
+    l1MintValueWei,
+    l2Calldata,
+    parsedGasLimit.value,
+    refreshL1Balance,
+    parsedAmount.value
+  ]);
 
   return (
     <div className="app">
@@ -573,20 +920,69 @@ export default function App() {
                 />
               </label>
               <label>
-                Amount on L2 (wei)
+                Amount on L2 (ETH)
                 <input
                   value={amount}
                   onChange={(event) => setAmount(event.target.value)}
-                  placeholder="50000000000000000"
+                  placeholder="0.01"
                 />
+                <div className="input-meta">
+                  <span>Wei: {parsedAmount.value.toString()}</span>
+                  {amountError ? <span className="error">{amountError}</span> : null}
+                </div>
+                <div className="quick-actions">
+                  {['0.001', '0.01', '0.1'].map((preset) => (
+                    <button
+                      type="button"
+                      key={preset}
+                      className="ghost"
+                      onClick={() => setAmount(preset)}
+                    >
+                      {preset} ETH
+                    </button>
+                  ))}
+                </div>
               </label>
               <label>
-                Mint value on L2 (wei)
+                Mint value (auto, ETH)
                 <input
                   value={mintValue}
-                  onChange={(event) => setMintValue(event.target.value)}
-                  placeholder="amount + gas buffer"
+                  onChange={(event) => {
+                    setMintValueManual(true);
+                    setMintValue(event.target.value);
+                  }}
+                  placeholder="amount + buffer"
                 />
+                <div className="input-meta">
+                  <span>
+                    Recommended: {formatEther(recommendedMintValueWei)} ETH (includes 0.00005 ETH
+                    buffer + 1 wei per gas unit)
+                  </span>
+                  {mintValueError ? <span className="error">{mintValueError}</span> : null}
+                </div>
+                <div className="quick-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setMintValueManual(false);
+                      setMintValue(formatEther(recommendedMintValueWei));
+                    }}
+                  >
+                    Reset to recommended
+                  </button>
+                </div>
+              </label>
+              <label>
+                L2 gas limit
+                <input
+                  value={l2GasLimitInput}
+                  onChange={(event) => setL2GasLimitInput(event.target.value)}
+                  placeholder={L2_GAS_LIMIT.toString()}
+                />
+                {parsedGasLimit.error ? (
+                  <span className="error">{parsedGasLimit.error}</span>
+                ) : null}
               </label>
               <label>
                 Refund recipient (L2)
@@ -601,7 +997,11 @@ export default function App() {
               <span>{pubKeyStatus}</span>
             </div>
             <div className="actions">
-              <button type="button" onClick={generatePayload}>
+              <button
+                type="button"
+                onClick={generatePayload}
+                disabled={Boolean(amountError) || !recipientAddress || !amount}
+              >
                 Generate deposit payload
               </button>
               {encryptionError ? <span className="error">{encryptionError}</span> : null}
@@ -614,43 +1014,81 @@ export default function App() {
                   <h3>What L1 sees</h3>
                   <div className="row">
                     <span>Amount</span>
-                    <div>
-                      <code>{amount || '0'}</code>
+                    <div className="value-stack">
+                      <code className="mono-block">{formatEther(parsedAmount.value)} ETH</code>
+                      <code className="mono-block muted">Wei: {parsedAmount.value.toString()}</code>
                     </div>
                   </div>
                   <div className="row">
                     <span>Deposit ID</span>
-                    <div>
-                      <code>{payload.depositId}</code>
-                      <button type="button" onClick={() => copyValue(payload.depositId)}>
+                    <div className="value-stack">
+                      <code className="mono-block">{payload.depositId}</code>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => copyValue(payload.depositId)}
+                      >
                         Copy
                       </button>
                     </div>
                   </div>
                   <div className="row">
                     <span>Commitment</span>
-                    <div>
-                      <code>{payload.commitment}</code>
-                      <button type="button" onClick={() => copyValue(payload.commitment)}>
+                    <div className="value-stack">
+                      <code className="mono-block">{payload.commitment}</code>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => copyValue(payload.commitment)}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                  <div className="row">
+                    <span>AAD</span>
+                    <div className="value-stack">
+                      <code className="mono-block">{payload.aad}</code>
+                      <button type="button" className="ghost" onClick={() => copyValue(payload.aad)}>
                         Copy
                       </button>
                     </div>
                   </div>
                   <div className="row">
                     <span>Ciphertext</span>
-                    <div>
-                      <code className="wrap">{payload.ciphertext}</code>
-                      <button type="button" onClick={() => copyValue(payload.ciphertext)}>
-                        Copy
-                      </button>
+                    <div className="value-stack">
+                      <code className="mono-block">
+                        {showCiphertext || payload.ciphertext.length <= MAX_INLINE_CIPHERTEXT
+                          ? payload.ciphertext
+                          : `${payload.ciphertext.slice(0, MAX_INLINE_CIPHERTEXT)}…`}
+                      </code>
+                      <div className="actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => copyValue(payload.ciphertext)}
+                        >
+                          Copy
+                        </button>
+                        {payload.ciphertext.length > MAX_INLINE_CIPHERTEXT ? (
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => setShowCiphertext((prev) => !prev)}
+                          >
+                            {showCiphertext ? 'Show less' : 'Show more'}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                   <div className="row">
                     <span>Destination</span>
-                    <div>
-                      <code>{PRIVATEPAY_INBOX_L2_ADDRESS}</code>
+                    <div className="value-stack">
+                      <code className="mono-block">{PRIVATEPAY_INBOX_L2_ADDRESS}</code>
                       <button
                         type="button"
+                        className="ghost"
                         onClick={() => copyValue(PRIVATEPAY_INBOX_L2_ADDRESS)}
                       >
                         Copy
@@ -663,15 +1101,17 @@ export default function App() {
                   <h3>Recipient learns after decrypt</h3>
                   <div className="row">
                     <span>Recipient</span>
-                    <div>
-                      <code>{payload.recipient}</code>
+                    <div className="value-stack">
+                      <code className="mono-block">{payload.recipient}</code>
                     </div>
                   </div>
                   <div className="row">
                     <span>Secret</span>
-                    <div>
-                      <code>{showSecret ? payload.secret : '••••••••••••••••••••••••'}</code>
-                      <button type="button" onClick={() => setShowSecret(!showSecret)}>
+                    <div className="value-stack">
+                      <code className="mono-block">
+                        {showSecret ? payload.secret : '••••••••••••••••••••••••'}
+                      </code>
+                      <button type="button" className="ghost" onClick={() => setShowSecret(!showSecret)}>
                         {showSecret ? 'Hide' : 'Reveal'}
                       </button>
                     </div>
@@ -685,6 +1125,83 @@ export default function App() {
             ) : null}
 
             <div className="card">
+              <h3>Send via L1 wallet</h3>
+              <div className="actions">
+                <button type="button" onClick={l1Wallet.connectWallet}>
+                  {l1WalletAddress ? 'Reconnect L1 wallet' : 'Connect L1 wallet'}
+                </button>
+                {l1WalletAddress ? (
+                  <span className="status-line">Connected: {formatAddress(l1WalletAddress)}</span>
+                ) : null}
+              </div>
+              {l1Wallet.chainWarning ? (
+                <p className="warning">
+                  {l1Wallet.chainWarning}{' '}
+                  {l1Wallet.walletClient ? (
+                    <button type="button" className="ghost" onClick={l1Wallet.switchChain}>
+                      Switch network
+                    </button>
+                  ) : null}
+                </p>
+              ) : null}
+              {l1WalletAddress ? (
+                <div className="balance-line">
+                  <span>Balance: {l1Balance !== null ? `${formatEther(l1Balance)} ETH` : '—'}</span>
+                  <button type="button" className="ghost" onClick={refreshL1Balance}>
+                    Refresh
+                  </button>
+                </div>
+              ) : null}
+              {l1BalanceEmpty ? (
+                <p className="warning error">L1 balance is 0. You need gas to send.</p>
+              ) : null}
+              {l1BalanceLow && !l1BalanceEmpty ? (
+                <p className="warning">Low L1 balance detected.</p>
+              ) : null}
+              {l1InsufficientMint ? (
+                <p className="warning error">Insufficient balance to send mintValue.</p>
+              ) : null}
+              <div className="actions">
+                <button
+                  type="button"
+                  onClick={sendBridgehubWallet}
+                  disabled={
+                    !l1WalletAddress ||
+                    !payload ||
+                    Boolean(amountError) ||
+                    Boolean(mintValueError) ||
+                    Boolean(parsedGasLimit.error) ||
+                    l1BalanceEmpty ||
+                    l1InsufficientMint
+                  }
+                >
+                  Send via wallet
+                </button>
+                {l1SendStatus ? <span className="status-line">{l1SendStatus}</span> : null}
+              </div>
+              {l1SendTx ? (
+                <div className="value-stack">
+                  <code className="mono-block">{l1SendTx}</code>
+                  <div className="actions">
+                    <button type="button" className="ghost" onClick={() => copyValue(l1SendTx)}>
+                      Copy tx hash
+                    </button>
+                    {getL1ExplorerTxUrl(l1SendTx) ? (
+                      <a
+                        className="ghost-link"
+                        href={getL1ExplorerTxUrl(l1SendTx)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View on explorer
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="card">
               <h3>Bridgehub requestL2TransactionDirect</h3>
               <p>
                 Use the command below to send the deposit. Adjust mintValue if you see
@@ -692,10 +1209,10 @@ export default function App() {
               </p>
               <div className="row">
                 <span>l2Calldata</span>
-                <div>
-                  <code className="wrap">{l2Calldata || 'Generate payload first.'}</code>
+                <div className="value-stack">
+                  <code className="mono-block">{l2Calldata || 'Generate payload first.'}</code>
                   {l2Calldata ? (
-                    <button type="button" onClick={() => copyValue(l2Calldata)}>
+                    <button type="button" className="ghost" onClick={() => copyValue(l2Calldata)}>
                       Copy
                     </button>
                   ) : null}
@@ -703,10 +1220,10 @@ export default function App() {
               </div>
               <div className="row">
                 <span>Cast command</span>
-                <div>
-                  <code className="wrap">{castCommand || 'Fill in the form above.'}</code>
+                <div className="value-stack">
+                  <code className="mono-block">{castCommand || 'Fill in the form above.'}</code>
                   {castCommand ? (
-                    <button type="button" onClick={() => copyValue(castCommand)}>
+                    <button type="button" className="ghost" onClick={() => copyValue(castCommand)}>
                       Copy
                     </button>
                   ) : null}
@@ -726,8 +1243,8 @@ export default function App() {
                   localStorage for keys.
                 </p>
                 <div className="actions">
-                  <button type="button" onClick={connectWallet}>
-                    {walletAddress ? 'Reconnect wallet' : 'Connect wallet'}
+                  <button type="button" onClick={l2Wallet.connectWallet}>
+                    {l2WalletAddress ? 'Reconnect wallet' : 'Connect wallet'}
                   </button>
                   {!isAuthorized ? (
                     <button type="button" onClick={authorize} className="secondary">
@@ -735,12 +1252,21 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
-                {walletAddress ? (
+                {l2WalletAddress ? (
                   <div className="status-line">
-                    <span>Connected: {formatAddress(walletAddress)}</span>
+                    <span>Connected: {formatAddress(l2WalletAddress)}</span>
                   </div>
                 ) : null}
-                {chainWarning ? <p className="warning">{chainWarning}</p> : null}
+                {l2Wallet.chainWarning ? (
+                  <p className="warning">
+                    {l2Wallet.chainWarning}{' '}
+                    {l2Wallet.walletClient ? (
+                      <button type="button" className="ghost" onClick={l2Wallet.switchChain}>
+                        Switch network
+                      </button>
+                    ) : null}
+                  </p>
+                ) : null}
               </div>
 
               <div className="card">
@@ -750,6 +1276,20 @@ export default function App() {
                 ) : (
                   <p>No private key stored yet. Generate one to receive deposits.</p>
                 )}
+                {l2WalletAddress ? (
+                  <div className="balance-line">
+                    <span>Balance: {l2Balance !== null ? `${formatEther(l2Balance)} ETH` : '—'}</span>
+                    <button type="button" className="ghost" onClick={refreshL2Balance}>
+                      Refresh
+                    </button>
+                  </div>
+                ) : null}
+                {l2BalanceEmpty ? (
+                  <p className="warning error">L2 balance is 0. You need gas to store keys.</p>
+                ) : null}
+                {l2BalanceLow && !l2BalanceEmpty ? (
+                  <p className="warning">Low L2 balance detected.</p>
+                ) : null}
                 <div className="actions">
                   <button
                     type="button"
@@ -764,7 +1304,15 @@ export default function App() {
                     </button>
                   ) : null}
                   {generatedKeys ? (
-                    <button type="button" onClick={storePrivKey}>
+                    <button
+                      type="button"
+                      onClick={storePrivKey}
+                      disabled={
+                        !l2WalletAddress ||
+                        l2BalanceEmpty ||
+                        Boolean(l2Wallet.chainWarning)
+                      }
+                    >
                       Store private key on L2
                     </button>
                   ) : null}
@@ -773,31 +1321,98 @@ export default function App() {
                   <div className="mini-grid">
                     <div>
                       <span>Public key</span>
-                      <code className="wrap">{generatedKeys.pubKey}</code>
+                      <code className="mono-block">{generatedKeys.pubKey}</code>
                       <button type="button" onClick={() => copyValue(generatedKeys.pubKey)}>
                         Copy
                       </button>
                     </div>
                     <div>
                       <span>Private key (kept in memory)</span>
-                      <code className="wrap">{generatedKeys.privKey}</code>
+                      <code className="mono-block">{generatedKeys.privKey}</code>
                       <button type="button" onClick={() => copyValue(generatedKeys.privKey)}>
                         Copy
                       </button>
                     </div>
                   </div>
                 ) : null}
+                {lastPrivKeyTx ? (
+                  <p className="muted">Stored private key tx: {lastPrivKeyTx}</p>
+                ) : null}
+              </div>
+
+              <div className="card">
+                <h3>Register public key on L1</h3>
+                <p>Use an L1 wallet to register your public key in the L1 directory.</p>
+                <div className="actions">
+                  <button type="button" onClick={l1Wallet.connectWallet}>
+                    {l1WalletAddress ? 'Reconnect L1 wallet' : 'Connect L1 wallet'}
+                  </button>
+                  {l1WalletAddress ? (
+                    <span className="status-line">Connected: {formatAddress(l1WalletAddress)}</span>
+                  ) : null}
+                </div>
+                {l1Wallet.chainWarning ? (
+                  <p className="warning">
+                    {l1Wallet.chainWarning}{' '}
+                    {l1Wallet.walletClient ? (
+                      <button type="button" className="ghost" onClick={l1Wallet.switchChain}>
+                        Switch network
+                      </button>
+                    ) : null}
+                  </p>
+                ) : null}
+                {l1WalletAddress ? (
+                  <div className="balance-line">
+                    <span>Balance: {l1Balance !== null ? `${formatEther(l1Balance)} ETH` : '—'}</span>
+                    <button type="button" className="ghost" onClick={refreshL1Balance}>
+                      Refresh
+                    </button>
+                  </div>
+                ) : null}
+                {l1BalanceEmpty ? (
+                  <p className="warning error">L1 balance is 0. You need gas to register.</p>
+                ) : null}
+                {l1BalanceLow && !l1BalanceEmpty ? (
+                  <p className="warning">Low L1 balance detected.</p>
+                ) : null}
+                <div className="actions">
+                  <button
+                    type="button"
+                    onClick={sendL1Register}
+                    disabled={!generatedKeys?.pubKey || !l1WalletAddress || l1BalanceEmpty}
+                  >
+                    Register public key on L1
+                  </button>
+                  {l1RegisterStatus ? <span className="status-line">{l1RegisterStatus}</span> : null}
+                </div>
+                {l1RegisterTx ? (
+                  <div className="value-stack">
+                    <code className="mono-block">{l1RegisterTx}</code>
+                    <div className="actions">
+                      <button type="button" className="ghost" onClick={() => copyValue(l1RegisterTx)}>
+                        Copy tx hash
+                      </button>
+                      {getL1ExplorerTxUrl(l1RegisterTx) ? (
+                        <a
+                          className="ghost-link"
+                          href={getL1ExplorerTxUrl(l1RegisterTx)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          View on explorer
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 {generatedKeys ? (
                   <div className="notice">
-                    <p>Register the public key on L1 using:</p>
-                    <code className="wrap">
+                    <p>CLI alternative:</p>
+                    <code className="mono-block">
                       cast send {KEY_DIRECTORY_L1_ADDRESS} "register(bytes)" {generatedKeys.pubKey}{' '}
                       --private-key $PRIVATE_KEY
                     </code>
                   </div>
-                ) : null}
-                {lastPrivKeyTx ? (
-                  <p className="muted">Stored private key tx: {lastPrivKeyTx}</p>
                 ) : null}
               </div>
             </div>
@@ -812,17 +1427,33 @@ export default function App() {
                   Check key status
                 </button>
               </div>
+              {l2WalletAddress ? (
+                <div className="balance-line">
+                  <span>Balance: {l2Balance !== null ? `${formatEther(l2Balance)} ETH` : '—'}</span>
+                  <button type="button" className="ghost" onClick={refreshL2Balance}>
+                    Refresh
+                  </button>
+                </div>
+              ) : null}
               <label className="claim-input">
                 Claim to address (default: your wallet)
                 <input
                   value={claimTo}
                   onChange={(event) => setClaimTo(event.target.value)}
-                  placeholder={walletAddress || '0x...'}
+                  placeholder={l2WalletAddress || '0x...'}
                 />
               </label>
-              {balanceWarning ? (
+              {l2BalanceEmpty ? (
+                <p className="warning error">
+                  L2 balance is 0. You need gas to claim.{' '}
+                  <a href="README.md#faucet" target="_blank" rel="noreferrer">
+                    Faucet example
+                  </a>
+                </p>
+              ) : null}
+              {l2BalanceLow && !l2BalanceEmpty ? (
                 <p className="warning">
-                  {balanceWarning}{' '}
+                  Low L2 balance detected.{' '}
                   <a href="README.md#faucet" target="_blank" rel="noreferrer">
                     Faucet example
                   </a>
@@ -862,7 +1493,11 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => claimDeposit(deposit)}
-                          disabled={claimingIndex === deposit.index}
+                          disabled={
+                            claimingIndex === deposit.index ||
+                            l2BalanceEmpty ||
+                            Boolean(l2Wallet.chainWarning)
+                          }
                         >
                           {claimingIndex === deposit.index ? 'Claiming…' : 'Claim'}
                         </button>
