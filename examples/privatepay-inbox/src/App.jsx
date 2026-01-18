@@ -81,6 +81,7 @@ const bridgehubAbi = [
     name: 'l2TransactionBaseCost',
     stateMutability: 'view',
     inputs: [
+      { name: 'chainId', type: 'uint256' },
       { name: 'gasPrice', type: 'uint256' },
       { name: 'l2GasLimit', type: 'uint256' },
       { name: 'l2GasPerPubdataByteLimit', type: 'uint256' }
@@ -445,7 +446,7 @@ export default function App() {
           address: BRIDGEHUB_ADDRESS,
           abi: bridgehubAbi,
           functionName: 'l2TransactionBaseCost',
-          args: [gasPricePadded, parsedGasLimit.value, L2_GAS_PER_PUBDATA]
+          args: [L2_CHAIN_ID, gasPricePadded, parsedGasLimit.value, L2_GAS_PER_PUBDATA]
         });
         if (!isMounted) return;
         setRecommendedMintValueWei(baseCost + parsedAmount.value);
