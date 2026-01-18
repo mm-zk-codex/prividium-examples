@@ -69,7 +69,29 @@ const bridgehubAbi = [
       }
     ],
     outputs: []
+  },
+  {
+    type: 'function',
+    name: 'l2TransactionBaseCost',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'request',
+        type: 'tuple',
+        components: [
+          { name: 'chainId', type: 'uint256' },
+          { name: 'gasPrice', type: 'uint256' },
+          { name: 'l2GasLimit', type: 'uint256' },
+          { name: 'l2GasPerPubdataByteLimit', type: 'uint256' },
+
+        ]
+      }
+    ],
+    outputs: []
+
   }
+
+
 ];
 
 const l1Chain = defineChain({
@@ -264,7 +286,7 @@ export default function App() {
     beforeConnect: async () => {
       const ready = await authorize();
       if (!ready) return false;
-      await prividium.addNetworkToWallet();
+      //await prividium.addNetworkToWallet();
       return true;
     },
     onConnect: (address) => {
@@ -490,30 +512,6 @@ export default function App() {
     setL2Balance(balance);
   }, [l2PublicClient, l2WalletAddress]);
 
-  const refreshPrivKeyStatus = useCallback(async () => {
-    setDepositError('');
-    if (!l2WalletAddress) return;
-    if (!prividium.isAuthorized()) {
-      setDepositError('Authorize Prividium to read private storage.');
-      return;
-    }
-    try {
-      const exists = await l2PublicClient.readContract({
-        address: PRIVATEPAY_INBOX_L2_ADDRESS,
-        abi: privatePayInboxAbi,
-        functionName: 'hasMyPrivKey',
-        account: l2WalletAddress
-      });
-      setHasPrivKey(Boolean(exists));
-      if (exists) {
-        await fetchPrivKey();
-      }
-    } catch (error) {
-      console.error('Failed to read priv key status', error);
-      setDepositError('Unable to read private key status.');
-    }
-  }, [l2WalletAddress, l2PublicClient, fetchPrivKey]);
-
   const fetchPrivKey = useCallback(async () => {
     setDepositError('');
     if (!l2WalletAddress) return;
@@ -539,6 +537,30 @@ export default function App() {
       setDepositError('Unable to fetch private key.');
     }
   }, [l2WalletAddress, l2PublicClient]);
+
+  const refreshPrivKeyStatus = useCallback(async () => {
+    setDepositError('');
+    if (!l2WalletAddress) return;
+    if (!prividium.isAuthorized()) {
+      setDepositError('Authorize Prividium to read private storage.');
+      return;
+    }
+    try {
+      const exists = await l2PublicClient.readContract({
+        address: PRIVATEPAY_INBOX_L2_ADDRESS,
+        abi: privatePayInboxAbi,
+        functionName: 'hasMyPrivKey',
+        account: l2WalletAddress
+      });
+      setHasPrivKey(Boolean(exists));
+      if (exists) {
+        await fetchPrivKey();
+      }
+    } catch (error) {
+      console.error('Failed to read priv key status', error);
+      setDepositError('Unable to read private key status.');
+    }
+  }, [l2WalletAddress, l2PublicClient, fetchPrivKey]);
 
   const sendL2Transaction = useCallback(
     async ({ to, data, value = 0n }) => {
