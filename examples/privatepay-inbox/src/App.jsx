@@ -36,7 +36,13 @@ import {
   encryptPayload,
   generateKeyPair
 } from './crypto.js';
-import { copyToClipboard, formatAddress, formatNumber, formatTimestamp } from './utils.js';
+import {
+  copyToClipboard,
+  formatAddress,
+  formatAmount,
+  formatNumber,
+  formatTimestamp
+} from './utils.js';
 
 const CONTEXT_HASH = keccak256(toHex(CONTEXT_STRING));
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -75,23 +81,13 @@ const bridgehubAbi = [
     name: 'l2TransactionBaseCost',
     stateMutability: 'view',
     inputs: [
-      {
-        name: 'request',
-        type: 'tuple',
-        components: [
-          { name: 'chainId', type: 'uint256' },
-          { name: 'gasPrice', type: 'uint256' },
-          { name: 'l2GasLimit', type: 'uint256' },
-          { name: 'l2GasPerPubdataByteLimit', type: 'uint256' },
-
-        ]
-      }
+      { name: 'chainId', type: 'uint256' },
+      { name: 'gasPrice', type: 'uint256' },
+      { name: 'l2GasLimit', type: 'uint256' },
+      { name: 'l2GasPerPubdataByteLimit', type: 'uint256' }
     ],
-    outputs: []
-
+    outputs: [{ name: 'baseCost', type: 'uint256' }]
   }
-
-
 ];
 
 const l1Chain = defineChain({
@@ -158,6 +154,45 @@ function useChainWallet({ chain, chainId, label, beforeConnect, onConnect }) {
   const [walletAddress, setWalletAddress] = useState('');
   const [chainWarning, setChainWarning] = useState('');
   const [connectedChainId, setConnectedChainId] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function silentReconnect() {
+      if (!window.ethereum) return;
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        const address = accounts?.[0];
+        if (!address || !isMounted) return;
+        const client = createWalletClient({
+          chain,
+          transport: custom(window.ethereum)
+        });
+        const normalized = getAddress(address);
+        setWalletClient(client);
+        setWalletAddress(normalized);
+        const currentChainId = await client.getChainId();
+        if (!isMounted) return;
+        setConnectedChainId(Number(currentChainId));
+        if (Number(currentChainId) !== Number(chainId)) {
+          setChainWarning(`Wrong network. Please switch to ${label} (chain ${chainId}).`);
+        } else {
+          setChainWarning('');
+        }
+        if (onConnect) {
+          onConnect(normalized);
+        }
+      } catch (error) {
+        if (!isMounted) return;
+        console.warn('Silent wallet reconnect failed', error);
+      }
+    }
+
+    silentReconnect();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [chain, chainId, label, onConnect]);
 
   const connectWallet = useCallback(async () => {
     if (!window.ethereum) {
@@ -244,6 +279,8 @@ export default function App() {
   const [mintValue, setMintValue] = useState('');
   const [l2GasLimitInput, setL2GasLimitInput] = useState(L2_GAS_LIMIT.toString());
   const [mintValueManual, setMintValueManual] = useState(false);
+  const [mintValueEstimateNote, setMintValueEstimateNote] = useState('');
+  const [mintValueEstimateWarning, setMintValueEstimateWarning] = useState('');
   const [refundRecipient, setRefundRecipient] = useState('');
   const [recipientPubKey, setRecipientPubKey] = useState('');
   const [pubKeyStatus, setPubKeyStatus] = useState('');
@@ -273,6 +310,7 @@ export default function App() {
   const [claimTo, setClaimTo] = useState('');
   const [lastClaimTx, setLastClaimTx] = useState('');
   const [lastPrivKeyTx, setLastPrivKeyTx] = useState('');
+  const [gasPriceRefreshIndex, setGasPriceRefreshIndex] = useState(0);
 
   const l1Wallet = useChainWallet({
     chain: l1Chain,
@@ -372,13 +410,73 @@ export default function App() {
     }
   }, [l2GasLimitInput]);
 
-  const recommendedMintValueWei = useMemo(() => {
+  const fallbackMintValueWei = useMemo(() => {
     return (
       parsedAmount.value +
       MINT_BUFFER_WEI +
       parsedGasLimit.value * GAS_BUFFER_WEI_PER_UNIT
     );
   }, [parsedAmount.value, parsedGasLimit.value]);
+  const [recommendedMintValueWei, setRecommendedMintValueWei] = useState(fallbackMintValueWei);
+
+  const refreshL1GasPrice = useCallback(() => {
+    setGasPriceRefreshIndex((prev) => prev + 1);
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshL1GasPrice();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [refreshL1GasPrice]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function estimateMintValue() {
+      if (parsedAmount.error || parsedGasLimit.error) {
+        setRecommendedMintValueWei(fallbackMintValueWei);
+        setMintValueEstimateWarning('');
+        setMintValueEstimateNote('');
+        return;
+      }
+      try {
+        const gasPrice = await l1Client.getGasPrice();
+        const gasPricePadded = (gasPrice * 110n) / 100n;
+        const baseCost = await l1Client.readContract({
+          address: BRIDGEHUB_ADDRESS,
+          abi: bridgehubAbi,
+          functionName: 'l2TransactionBaseCost',
+          args: [L2_CHAIN_ID, gasPricePadded, parsedGasLimit.value, L2_GAS_PER_PUBDATA]
+        });
+        if (!isMounted) return;
+        setRecommendedMintValueWei(baseCost + parsedAmount.value);
+        setMintValueEstimateWarning('');
+        setMintValueEstimateNote(
+          'mintValue auto-estimated via Bridgehub.l2TransactionBaseCost (gasPrice padded by 10%).'
+        );
+      } catch (error) {
+        console.error('Failed to fetch base cost', error);
+        if (!isMounted) return;
+        setRecommendedMintValueWei(fallbackMintValueWei);
+        setMintValueEstimateWarning("Couldn't fetch base cost; using conservative estimate.");
+        setMintValueEstimateNote('');
+      }
+    }
+
+    estimateMintValue();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    l1Client,
+    parsedAmount.error,
+    parsedAmount.value,
+    parsedGasLimit.error,
+    parsedGasLimit.value,
+    fallbackMintValueWei,
+    gasPriceRefreshIndex
+  ]);
 
   useEffect(() => {
     if (!amount) {
@@ -504,7 +602,8 @@ export default function App() {
     if (!l1WalletAddress) return;
     const balance = await l1Client.getBalance({ address: l1WalletAddress });
     setL1Balance(balance);
-  }, [l1Client, l1WalletAddress]);
+    refreshL1GasPrice();
+  }, [l1Client, l1WalletAddress, refreshL1GasPrice]);
 
   const refreshL2Balance = useCallback(async () => {
     if (!l2WalletAddress) return;
@@ -955,9 +1054,14 @@ export default function App() {
                 />
                 <div className="input-meta">
                   <span>
-                    Recommended: {formatEther(recommendedMintValueWei)} ETH (includes 0.00005 ETH
-                    buffer + 1 wei per gas unit)
+                    Recommended: {formatAmount(recommendedMintValueWei)} ETH
                   </span>
+                  {mintValueEstimateNote ? (
+                    <span className="muted">{mintValueEstimateNote}</span>
+                  ) : null}
+                  {mintValueEstimateWarning ? (
+                    <span className="warning">{mintValueEstimateWarning}</span>
+                  ) : null}
                   {mintValueError ? <span className="error">{mintValueError}</span> : null}
                 </div>
                 <div className="quick-actions">
@@ -1015,7 +1119,7 @@ export default function App() {
                   <div className="row">
                     <span>Amount</span>
                     <div className="value-stack">
-                      <code className="mono-block">{formatEther(parsedAmount.value)} ETH</code>
+                      <code className="mono-block">{formatAmount(parsedAmount.value)} ETH</code>
                       <code className="mono-block muted">Wei: {parsedAmount.value.toString()}</code>
                     </div>
                   </div>
@@ -1146,7 +1250,7 @@ export default function App() {
               ) : null}
               {l1WalletAddress ? (
                 <div className="balance-line">
-                  <span>Balance: {l1Balance !== null ? `${formatEther(l1Balance)} ETH` : '—'}</span>
+                  <span>Balance: {l1Balance !== null ? `${formatAmount(l1Balance)} ETH` : '—'}</span>
                   <button type="button" className="ghost" onClick={refreshL1Balance}>
                     Refresh
                   </button>
@@ -1278,7 +1382,7 @@ export default function App() {
                 )}
                 {l2WalletAddress ? (
                   <div className="balance-line">
-                    <span>Balance: {l2Balance !== null ? `${formatEther(l2Balance)} ETH` : '—'}</span>
+                    <span>Balance: {l2Balance !== null ? `${formatAmount(l2Balance)} ETH` : '—'}</span>
                     <button type="button" className="ghost" onClick={refreshL2Balance}>
                       Refresh
                     </button>
@@ -1363,7 +1467,7 @@ export default function App() {
                 ) : null}
                 {l1WalletAddress ? (
                   <div className="balance-line">
-                    <span>Balance: {l1Balance !== null ? `${formatEther(l1Balance)} ETH` : '—'}</span>
+                    <span>Balance: {l1Balance !== null ? `${formatAmount(l1Balance)} ETH` : '—'}</span>
                     <button type="button" className="ghost" onClick={refreshL1Balance}>
                       Refresh
                     </button>
@@ -1429,7 +1533,7 @@ export default function App() {
               </div>
               {l2WalletAddress ? (
                 <div className="balance-line">
-                  <span>Balance: {l2Balance !== null ? `${formatEther(l2Balance)} ETH` : '—'}</span>
+                  <span>Balance: {l2Balance !== null ? `${formatAmount(l2Balance)} ETH` : '—'}</span>
                   <button type="button" className="ghost" onClick={refreshL2Balance}>
                     Refresh
                   </button>
@@ -1471,8 +1575,11 @@ export default function App() {
                   <strong>{formatNumber(decryptable.length)}</strong>
                 </div>
                 <div>
-                  <span>Total incoming (wei)</span>
-                  <strong>{totalIncoming.toString()}</strong>
+                  <span>Total incoming</span>
+                  <div className="value-stack">
+                    <strong>{formatAmount(totalIncoming)} ETH</strong>
+                    <span className="muted mono-block">Wei: {totalIncoming.toString()}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1489,7 +1596,10 @@ export default function App() {
                         <p className="muted">Deposit ID: {deposit.depositId}</p>
                       </div>
                       <div className="deposit-actions">
-                        <span className="amount">{deposit.amount.toString()} wei</span>
+                        <div className="value-stack">
+                          <span className="amount">{formatAmount(deposit.amount)} ETH</span>
+                          <span className="muted mono-block">Wei: {deposit.amount.toString()}</span>
+                        </div>
                         <button
                           type="button"
                           onClick={() => claimDeposit(deposit)}
