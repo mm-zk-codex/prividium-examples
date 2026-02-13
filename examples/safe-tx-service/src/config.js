@@ -13,25 +13,9 @@ function normalizeAddress(address) {
   return getAddress(address).toLowerCase();
 }
 
-function resolveMultiSendAddress(chainId) {
-  const direct = process.env.MULTISEND_ADDRESS;
-  if (direct) return normalizeAddress(direct);
-
-  const byChainRaw = process.env.MULTISEND_ADDRESS_BY_CHAIN;
-  if (!byChainRaw) {
-    throw new Error('Missing env var: MULTISEND_ADDRESS (or MULTISEND_ADDRESS_BY_CHAIN)');
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(byChainRaw);
-  } catch (_error) {
-    throw new Error('MULTISEND_ADDRESS_BY_CHAIN must be valid JSON');
-  }
-  const chainAddress = parsed?.[String(chainId)];
-  if (!chainAddress) {
-    throw new Error(`Missing MultiSend address for chain ${chainId} in MULTISEND_ADDRESS_BY_CHAIN`);
-  }
-  return normalizeAddress(chainAddress);
+function optionalAddress(name) {
+  const value = process.env[name];
+  return value ? normalizeAddress(value) : null;
 }
 
 export const config = {
@@ -47,14 +31,22 @@ export const config = {
   chainId: Number(required('CHAIN_ID')),
   l2ChainId: Number(required('L2_CHAIN_ID')),
   servicePrivateKey: required('SERVICE_PRIVATE_KEY'),
-  multisendAddress: resolveMultiSendAddress(Number(required('CHAIN_ID'))),
-  safeFactoryAddress: process.env.SAFE_FACTORY_ADDRESS || null,
-  safeSingletonAddress: process.env.SAFE_SINGLETON_ADDRESS || null,
+  multisendAddress: optionalAddress('MULTISEND_ADDRESS'),
+  safeFactoryAddress: optionalAddress('SAFE_FACTORY_ADDRESS'),
+  safeSingletonAddress: optionalAddress('SAFE_SINGLETON_ADDRESS'),
+  safeFallbackHandlerAddress: optionalAddress('SAFE_FALLBACK_HANDLER_ADDRESS'),
   allowAdminSync: process.env.ALLOW_ADMIN_SYNC === 'true',
   syncPollMs: Number(process.env.SYNC_POLL_MS || 0),
   nativeSymbol: process.env.NATIVE_SYMBOL || 'ETH',
   nativeDecimals: Number(process.env.NATIVE_DECIMALS || 18),
-  withdrawalPollMs: Number(process.env.WITHDRAWAL_POLL_MS || 10000)
+  withdrawalPollMs: Number(process.env.WITHDRAWAL_POLL_MS || 10000),
+  sharedContractsPath: process.env.CONTRACTS_JSON_PATH || '/shared/contracts.json',
+  tenantAuthMode: process.env.TENANT_AUTH_MODE || 'none',
+  tenantApiKey: process.env.TENANT_API_KEY || null,
+  tenantWalletPrivateKey: process.env.TENANT_WALLET_PRIVATE_KEY || null,
+  allowAdvancedCalldata: process.env.ALLOW_ADVANCED_CALLDATA === 'true',
+  allowDelegatecall: process.env.ALLOW_DELEGATECALL === 'true',
+  allowCustomTargets: process.env.ALLOW_CUSTOM_TARGETS === 'true'
 };
 
 if (!config.l1NullifierAddress && !config.bridgehubAddress && !config.l1AssetRouterAddress) {

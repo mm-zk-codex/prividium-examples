@@ -1,3 +1,10 @@
+
+CREATE TABLE IF NOT EXISTS app_config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS safes (
   safe_address TEXT PRIMARY KEY,
   chain_id INT NOT NULL,

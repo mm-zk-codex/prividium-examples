@@ -444,6 +444,12 @@ async function normalizeProposalInput(input) {
   const mode = input.mode || 'direct';
   const isAdvanced = Boolean(input.advanced);
 
+  if (isAdvanced && !config.allowAdvancedCalldata) {
+    const err = new Error('Advanced calldata is disabled by ALLOW_ADVANCED_CALLDATA');
+    err.status = 400;
+    throw err;
+  }
+
   if (mode === 'erc20' && !isAdvanced) {
     const tokenAddress = input.erc20?.tokenAddress;
     const recipient = input.erc20?.recipient;
@@ -515,6 +521,23 @@ async function normalizeProposalInput(input) {
     data: tx.data,
     operation: Number(tx.operation)
   };
+
+  if (proposalTx.operation === 1 && !config.allowDelegatecall) {
+    const err = new Error('Delegatecall is disabled by ALLOW_DELEGATECALL');
+    err.status = 400;
+    throw err;
+  }
+
+  if (isAdvanced && !config.allowCustomTargets) {
+    const allowedTargets = new Set(getSupportedTokenAddresses().map((address) => normalizeAddress(address)));
+    allowedTargets.add(config.multisendAddress);
+    if (!allowedTargets.has(proposalTx.to)) {
+      const err = new Error('Custom targets are disabled by ALLOW_CUSTOM_TARGETS');
+      err.status = 400;
+      throw err;
+    }
+  }
+
   return {
     proposalTx,
     isAdvanced,

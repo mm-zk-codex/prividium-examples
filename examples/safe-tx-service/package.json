@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "db:init": "node src/dbInit.js"
+    "db:init": "node src/dbInit.js",
+    "init:contracts": "node scripts/init.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

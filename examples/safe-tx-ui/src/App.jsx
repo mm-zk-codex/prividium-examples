@@ -8,11 +8,11 @@ import {
 import { API_BASE_URL, prividium } from './prividium';
 
 const PROPOSAL_MODES = [
-  { key: 'erc20', label: 'ERC20 Transfer' },
-  { key: 'native', label: 'ETH Transfer' },
-  { key: 'withdraw', label: 'Withdraw to L1 (Base token)' },
-  { key: 'withdrawErc20', label: 'Withdraw to L1 (ERC20)' },
-  { key: 'custom', label: 'Custom Call' }
+  { key: 'erc20', label: 'ERC20 Transfer', advanced: false },
+  { key: 'native', label: 'ETH Transfer', advanced: false },
+  { key: 'withdraw', label: 'Withdraw to L1 (Base token)', advanced: false },
+  { key: 'withdrawErc20', label: 'Withdraw to L1 (ERC20)', advanced: false },
+  { key: 'custom', label: 'Custom Call', advanced: true }
 ];
 
 async function api(path, options = {}) {
@@ -208,6 +208,7 @@ export default function App() {
 
   const [proposalModalOpen, setProposalModalOpen] = useState(false);
   const [proposalMode, setProposalMode] = useState('erc20');
+  const [runtimeConfig, setRuntimeConfig] = useState({ allowAdvancedCalldata: false, allowDelegatecall: false, allowCustomTargets: false });
   const [selectedToken, setSelectedToken] = useState('');
   const [selectedAddressBookEntryId, setSelectedAddressBookEntryId] = useState('');
   const [recipient, setRecipient] = useState('');
@@ -228,6 +229,7 @@ export default function App() {
   const myAddress = me?.address?.toLowerCase();
   const l2Explorer = import.meta.env.VITE_EXPLORER_URL;
   const l1Explorer = import.meta.env.VITE_L1_EXPLORER_URL || '';
+  const availableProposalModes = useMemo(() => PROPOSAL_MODES.filter((mode) => !mode.advanced || runtimeConfig.allowAdvancedCalldata), [runtimeConfig]);
 
   const addToast = (message, type = 'success') => {
     const id = crypto.randomUUID();
@@ -244,10 +246,11 @@ export default function App() {
     if (!prividium.isAuthorized()) return;
     setLoadingSafes(true);
     try {
-      const [meData, safeData, tokenData] = await Promise.all([api('/v1/me'), api('/v1/safes'), api('/v1/tokens')]);
+      const [meData, safeData, tokenData, runtimeData] = await Promise.all([api('/v1/me'), api('/v1/safes'), api('/v1/tokens'), api('/v1/runtime-config')]);
       setMe(meData);
       setSafes(safeData.results || []);
       setTokens(tokenData.tokens || []);
+      setRuntimeConfig(runtimeData);
     } finally {
       setLoadingSafes(false);
     }
@@ -503,6 +506,12 @@ export default function App() {
     };
   };
 
+  useEffect(() => {
+    if (!availableProposalModes.some((mode) => mode.key === proposalMode)) {
+      setProposalMode(availableProposalModes[0]?.key || 'erc20');
+    }
+  }, [availableProposalModes, proposalMode]);
+
   const propose = async () => {
     setProposalError('');
     const tx = buildProposalTx();
@@ -521,6 +530,7 @@ export default function App() {
         })
       });
     } else {
+      if (proposalMode === 'custom' && !runtimeConfig.allowAdvancedCalldata) throw new Error('Advanced calldata is disabled by server');
       await api(`/v1/safes/${route.safeAddress}/transactions`, {
         method: 'POST',
         body: JSON.stringify({ tx })
@@ -969,7 +979,7 @@ export default function App() {
         <div className="modal-backdrop" onClick={() => setProposalModalOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>New Proposal</h3>
-            <Tabs compact value={proposalMode} onChange={setProposalMode} tabs={PROPOSAL_MODES} />
+            <Tabs compact value={proposalMode} onChange={setProposalMode} tabs={availableProposalModes} />
 
             {proposalMode === 'erc20' && (
               <>

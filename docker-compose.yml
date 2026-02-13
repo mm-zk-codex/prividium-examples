@@ -1,0 +1,94 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-safe_tx}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  init:
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-safe_tx}
+      PRIVIDIUM_RPC_URL: ${PRIVIDIUM_RPC_URL}
+      L1_RPC_URL: ${L1_RPC_URL}
+      PRIVIDIUM_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL}
+      CHAIN_ID: ${CHAIN_ID}
+      L2_CHAIN_ID: ${L2_CHAIN_ID}
+      SERVICE_PRIVATE_KEY: ${SERVICE_PRIVATE_KEY}
+      L1_RELAYER_PRIVATE_KEY: ${L1_RELAYER_PRIVATE_KEY}
+      DEPLOYER_PRIVATE_KEY: ${DEPLOYER_PRIVATE_KEY}
+      SAFE_FACTORY_BYTECODE: ${SAFE_FACTORY_BYTECODE}
+      SAFE_SINGLETON_BYTECODE: ${SAFE_SINGLETON_BYTECODE}
+      SAFE_FALLBACK_HANDLER_BYTECODE: ${SAFE_FALLBACK_HANDLER_BYTECODE}
+      SAFE_MULTISEND_BYTECODE: ${SAFE_MULTISEND_BYTECODE}
+      CONTRACTS_JSON_PATH: /shared/contracts.json
+    command: sh -c "npm ci && npm run init:contracts"
+    volumes:
+      - ./examples/safe-tx-service:/app
+      - contracts_shared:/shared
+    depends_on:
+      - db
+    restart: "no"
+
+  api:
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      PORT: 4010
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-safe_tx}
+      PRIVIDIUM_RPC_URL: ${PRIVIDIUM_RPC_URL}
+      L1_RPC_URL: ${L1_RPC_URL}
+      PRIVIDIUM_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL}
+      CHAIN_ID: ${CHAIN_ID}
+      L2_CHAIN_ID: ${L2_CHAIN_ID}
+      SERVICE_PRIVATE_KEY: ${SERVICE_PRIVATE_KEY}
+      L1_RELAYER_PRIVATE_KEY: ${L1_RELAYER_PRIVATE_KEY}
+      L1_NULLIFIER_ADDRESS: ${L1_NULLIFIER_ADDRESS}
+      L1_BRIDGEHUB_ADDRESS: ${L1_BRIDGEHUB_ADDRESS}
+      L1_ASSET_ROUTER_ADDRESS: ${L1_ASSET_ROUTER_ADDRESS}
+      TENANT_AUTH_MODE: ${TENANT_AUTH_MODE:-none}
+      TENANT_API_KEY: ${TENANT_API_KEY:-}
+      TENANT_WALLET_PRIVATE_KEY: ${TENANT_WALLET_PRIVATE_KEY:-}
+      ALLOW_ADVANCED_CALLDATA: ${ALLOW_ADVANCED_CALLDATA:-false}
+      ALLOW_DELEGATECALL: ${ALLOW_DELEGATECALL:-false}
+      ALLOW_CUSTOM_TARGETS: ${ALLOW_CUSTOM_TARGETS:-false}
+      CONTRACTS_JSON_PATH: /shared/contracts.json
+    command: sh -c "npm ci && npm start"
+    volumes:
+      - ./examples/safe-tx-service:/app
+      - contracts_shared:/shared:ro
+    depends_on:
+      - db
+      - init
+    ports:
+      - "4010:4010"
+
+  ui:
+    image: node:20-alpine
+    working_dir: /app
+    environment:
+      VITE_SAFE_TX_API_BASE_URL: http://localhost:4010
+      VITE_CHAIN_ID: ${CHAIN_ID}
+      VITE_RPC_URL: ${PRIVIDIUM_RPC_URL}
+      VITE_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL}
+      VITE_PRIVIDIUM_CLIENT_ID: ${VITE_PRIVIDIUM_CLIENT_ID:-}
+      VITE_AUTH_BASE_URL: ${VITE_AUTH_BASE_URL:-}
+      VITE_REDIRECT_URL: ${VITE_REDIRECT_URL:-http://localhost:5173/auth/callback}
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      - ./examples/safe-tx-ui:/app
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+    profiles: ["ui"]
+
+volumes:
+  pg_data:
+  contracts_shared:

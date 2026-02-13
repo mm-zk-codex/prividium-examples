@@ -3,6 +3,7 @@ import cors from 'cors';
 import { authMiddleware } from './auth.js';
 import { config } from './config.js';
 import { initDb, pool } from './db.js';
+import { loadContractsConfig } from './contractsConfig.js';
 import {
   assertOwner,
   createProposal,
@@ -81,6 +82,14 @@ app.get('/v1/safes/:safeAddress/transactions', async (req, res) => {
 app.get('/v1/tokens', async (_req, res) => {
   const tokens = await listSupportedTokens();
   res.json({ tokens });
+});
+
+app.get('/v1/runtime-config', (_req, res) => {
+  res.json({
+    allowAdvancedCalldata: config.allowAdvancedCalldata,
+    allowDelegatecall: config.allowDelegatecall,
+    allowCustomTargets: config.allowCustomTargets
+  });
 });
 
 
@@ -216,6 +225,7 @@ app.use((error, _req, res, _next) => {
 });
 
 await initDb();
+await loadContractsConfig();
 const server = app.listen(config.port, () => {
   console.log(`safe-tx-service listening on :${config.port}`);
 });
